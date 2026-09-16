@@ -81,7 +81,13 @@ sent in the clear and only the traffic after it is affected.
    only for counter 0, so the first frame of a session works and every frame after it is sealed
    with a nonce the device does not expect.
 
-Both should go upstream; until then Yarn applies them at install time.
+3. **Inbound framing.** `processEncryptedFrames()` reads the header length as a plaintext
+   length and computes `4 + length + 16`, but the Apple TV declares the ciphertext and tag
+   together, exactly as the library itself now sends. The parser therefore waits for 16 bytes
+   that never arrive: the reply is sitting in the buffer, never handed to anyone, and the
+   request times out. pyatv reads it as `HEADER_LENGTH + length`.
+
+All three should go upstream; until then Yarn applies them at install time.
 
 ### Companion Link message format
 

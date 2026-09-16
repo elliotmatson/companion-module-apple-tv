@@ -59,3 +59,26 @@ index 4afc08fd965ef8f0afa6b85f30987b64317a2f8d..2e38c32941414649f803d341bb20c964
          this.inCounter++;
          const ciphertext = encryptedPayload.subarray(0, encryptedPayload.length - AUTH_TAG_LENGTH);
          const tag = encryptedPayload.subarray(encryptedPayload.length - AUTH_TAG_LENGTH);
+diff --git a/dist/companion/connection.js b/dist/companion/connection.js
+index d2565bc91559836d2bedc1869f646e695879b909..9b7fd9051a7775a1259dc5f0b5f6dc400110ce12 100644
+--- a/dist/companion/connection.js
++++ b/dist/companion/connection.js
+@@ -278,11 +278,14 @@ export class CompanionConnection extends EventEmitter {
+     }
+     // --- Post-encryption frame handling ---
+     processEncryptedFrames() {
+-        // Encrypted frames: 4-byte header + ciphertext + 16-byte tag
+-        // The header contains the plaintext length, so total = 4 + plaintextLen + 16
++        // Encrypted frames: 4-byte header + ciphertext + 16-byte tag.
++        // The length in the header already covers the ciphertext AND the tag, exactly as
++        // pyatv's CompanionConnection.data_received() reads it. Adding the tag length again
++        // leaves the parser waiting for 16 bytes that will never arrive, so a reply that did
++        // arrive is never handed to anyone and the request times out instead.
+         while (this.buffer.length >= 4) {
+-            const plaintextLen = (this.buffer[1] << 16) | (this.buffer[2] << 8) | this.buffer[3];
+-            const totalLen = 4 + plaintextLen + 16;
++            const framedLength = (this.buffer[1] << 16) | (this.buffer[2] << 8) | this.buffer[3];
++            const totalLen = 4 + framedLength;
+             if (this.buffer.length < totalLen)
+                 break;
+             const header = this.buffer.subarray(0, 4);

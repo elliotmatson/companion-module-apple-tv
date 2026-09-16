@@ -68,29 +68,36 @@ export function GetConfigFields(state: ConfigUiState): SomeCompanionConfigField[
 			isVisibleExpression: `!$(options:bonjour_host)`,
 			disableAutoExpression: true,
 		},
-		{
-			type: 'textinput',
-			id: 'pairPin',
-			label: pinLabel(state),
-			width: 12,
-			default: '',
-			description: pinDescription(state),
-			disableAutoExpression: true,
-		},
 	]
 
-	// Nothing to re-pair until something has been paired, so the option only appears once it can do something.
-	if (state.airplayPaired || state.companionPaired) {
+	// Once something is paired there is no PIN to type, but ticking "Pair again" needs somewhere
+	// to put one straight away. isVisibleExpression is evaluated in the browser as the user
+	// changes fields, so the box appears on the tick without waiting for a save.
+	const storedPairing = state.airplayPaired || state.companionPaired
+	const gateBehindRepair = storedPairing && !state.awaitingPin
+
+	if (gateBehindRepair) {
 		fields.push({
 			type: 'checkbox',
 			id: 'repair',
 			label: 'Pair again',
 			width: 12,
 			default: false,
-			description: 'Forgets the stored credentials and starts the pairing steps over. Tick and press Save.',
+			description: 'Forgets the stored credentials and starts the pairing steps over.',
 			disableAutoExpression: true,
 		})
 	}
+
+	fields.push({
+		type: 'textinput',
+		id: 'pairPin',
+		label: pinLabel(state),
+		width: 12,
+		default: '',
+		description: pinDescription(state),
+		disableAutoExpression: true,
+		...(gateBehindRepair ? { isVisibleExpression: `$(options:repair)` } : {}),
+	})
 
 	fields.push({
 		type: 'dropdown',
@@ -164,7 +171,7 @@ function pinLabel(state: ConfigUiState): string {
 
 function pinDescription(state: ConfigUiState): string {
 	if (state.awaitingPin) return 'Type the PIN shown on the Apple TV, then press Save.'
-	if (state.airplayPaired && state.companionPaired) return 'Not needed — pairing is complete.'
+	if (state.airplayPaired || state.companionPaired) return 'Press Save, then type the PIN the Apple TV shows.'
 	return 'Fill this in once the Apple TV shows a PIN.'
 }
 

@@ -22,8 +22,9 @@ for. Both protocols are paired in one run, which is why there are two PINs: AirP
 Companion Link. If the second pairing cannot be started, the AirPlay pairing is still kept and
 everything except app launching carries on working.
 
-To start over — a replaced Apple TV, or a factory reset — tick **Pair again** and press Save.
-That option only appears once something has been paired.
+Once pairing is done the **Pairing PIN** box disappears, since there is nothing to type into it.
+To start over — a replaced Apple TV, or a factory reset — tick **Pair again** and press Save;
+the PIN box comes back as soon as you tick it.
 
 > The filter matches the Apple TV models that support these protocols: Apple TV HD (4th gen)
 > and every Apple TV 4K. If Apple ships a model newer than this module knows about, it will not

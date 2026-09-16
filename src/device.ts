@@ -41,9 +41,7 @@ const COMPANION_HID_CODES: Partial<Record<RemoteKeyId, number>> = {
 export interface DeviceTarget {
 	host: string
 	port: number
-	/** Companion Link is usually on the same host, but the two are discovered separately. */
-	companionHost: string
-	/** 0 = discover the companion-link port over mDNS */
+	/** Fallback used only when discovery cannot find the (dynamic) companion-link port */
 	companionPort: number
 	transport: Transport
 	reconnectIntervalMs: number
@@ -155,6 +153,11 @@ export class AppleTvDevice {
 
 	get hasPendingPairing(): boolean {
 		return this.#pending !== undefined
+	}
+
+	/** Which protocol is waiting on a PIN, so the status can say which one to type. */
+	get pendingPairingProtocol(): 'airplay' | 'companion' | undefined {
+		return this.#pending?.protocol
 	}
 
 	get wantsAirplay(): boolean {
@@ -295,20 +298,10 @@ export class AppleTvDevice {
 			return
 		}
 
-		const port = atv.companionPort ?? (target.companionPort > 0 ? target.companionPort : undefined)
+		const port = atv.companionPort
 		if (!port) {
-			this.#host.log('warn', 'Could not find the Companion Link port; set it manually in the module config')
+			this.#host.log('warn', 'Could not find the Companion Link port; is Bonjour reaching the Apple TV?')
 			return
-		}
-
-		// Both connections are made to the AirPlay address, so picking a Companion Link device
-		// on a different host would quietly talk to the wrong Apple TV.
-		if (target.companionHost !== target.host) {
-			this.#host.log(
-				'warn',
-				`Companion Link was selected on ${target.companionHost} but the connection is to ${target.host}; ` +
-					'pick the matching device or the wrong Apple TV may respond',
-			)
 		}
 
 		this.#companionConnecting = true
@@ -319,7 +312,7 @@ export class AppleTvDevice {
 			await withTimeout(
 				atv.connectCompanion(companionCreds, port),
 				CONNECT_TIMEOUT_MS,
-				`connect to Companion Link on ${target.companionHost}:${port}`,
+				`connect to Companion Link on ${target.host}:${port}`,
 			)
 
 			this.#setConnected(this.state.connected, true)
@@ -373,8 +366,9 @@ export class AppleTvDevice {
 			companionPort: target.companionPort > 0 ? target.companionPort : undefined,
 		}
 
-		// Only worth the mDNS round trip when we are missing something it can tell us.
-		const needsCompanionPort = target.transport !== 'airplay' && target.companionPort <= 0
+		// The companion-link port is assigned afresh every time the Apple TV restarts, so it is
+		// always discovered rather than trusted from config; the configured value is a last resort.
+		const needsCompanionPort = target.transport !== 'airplay'
 		if (!needsCompanionPort && fallback.name) return fallback
 
 		try {
@@ -390,7 +384,7 @@ export class AppleTvDevice {
 				port: target.port || found.port,
 				deviceId: found.deviceId,
 				model: found.model,
-				companionPort: target.companionPort > 0 ? target.companionPort : found.companionPort,
+				companionPort: found.companionPort ?? (target.companionPort > 0 ? target.companionPort : undefined),
 			}
 		} catch (e) {
 			this.#host.log('debug', `Bonjour scan failed: ${errorMessage(e)}`)
@@ -655,7 +649,7 @@ export class AppleTvDevice {
 		// AirPlay pairing needs nothing Bonjour could add, so skip the scan and its delay.
 		const info: DiscoveredInfo =
 			protocol === 'companion'
-				? await this.#discover({ ...target, host: target.companionHost, transport: 'companion' })
+				? await this.#discover({ ...target, transport: 'companion' })
 				: { name: '', address: target.host, port: target.port, deviceId: '', model: '' }
 
 		const atv = new AppleTV(info)
@@ -671,7 +665,7 @@ export class AppleTvDevice {
 			const session = await withTimeout(
 				atv.startCompanionPairing({ companionPort: port }),
 				PAIR_TIMEOUT_MS,
-				`request a PIN from ${target.companionHost}`,
+				`request a PIN from ${target.host}`,
 			)
 			this.#pending = {
 				protocol,

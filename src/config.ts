@@ -1,23 +1,17 @@
 import { Regex, type SomeCompanionConfigField } from '@companion-module/base'
 import type { Transport } from './device.js'
 
-/** Which transport the pairing flow should pair with. */
-export type PairProtocol = 'airplay' | 'companion'
-
 export type ModuleConfig = {
 	/** `10.0.0.1:7000` when a bonjour device is picked, otherwise null/'' */
 	bonjour_host: string | null
 	host: string
 	port: number
 
-	/** `10.0.0.1:49153` when a bonjour companion-link device is picked */
-	bonjour_companion: string | null
-	/** 0 = discover the companion-link port over mDNS */
+	/** Fallback only. 0 = always discover the companion-link port over mDNS */
 	companionPort: number
 
 	transport: Transport
 
-	pairProtocol: PairProtocol
 	pairStart: boolean
 	pairPin: string
 
@@ -46,9 +40,10 @@ export function GetConfigFields(paired: PairingStatus): SomeCompanionConfigField
 			label: 'Apple TV',
 			width: 12,
 			value:
-				'Controls an Apple TV over the local network. Pick your Apple TV below (or enter its IP), then run the ' +
-				'pairing flow: tick <b>Begin pairing</b> and save — a PIN appears on the TV. Type that PIN into ' +
-				'<b>Pairing PIN</b> and save again. Pairing only has to be done once per protocol.',
+				'Controls an Apple TV over the local network. Pick your Apple TV below (or enter its IP), then tick ' +
+				'<b>Begin pairing</b> and save. The Apple TV shows a PIN — type it into <b>Pairing PIN</b> and save ' +
+				'again. It then shows a <b>second</b> PIN for the other protocol; enter that one the same way. ' +
+				'Pairing only has to be done once.',
 		},
 
 		{
@@ -105,37 +100,26 @@ export function GetConfigFields(paired: PairingStatus): SomeCompanionConfigField
 			width: 12,
 			value:
 				`AirPlay: <b>${tick(paired.airplay)}</b> &nbsp;&nbsp;|&nbsp;&nbsp; Companion Link: <b>${tick(paired.companion)}</b><br>` +
-				'Each protocol is paired separately and the two are stored side by side, so pairing one does not ' +
-				'undo the other. The Apple TV must be awake and on the same network.',
-		},
-		{
-			type: 'dropdown',
-			id: 'pairProtocol',
-			label: 'Pair with',
-			width: 4,
-			default: 'airplay',
-			choices: [
-				{ id: 'airplay', label: 'AirPlay' },
-				{ id: 'companion', label: 'Companion Link' },
-			],
-			disableAutoExpression: true,
+				'Pairing covers both protocols in one run, which is why the Apple TV shows two PINs — AirPlay first, ' +
+				'then Companion Link. The Apple TV must be awake and on the same network. If the second pairing ' +
+				'cannot be started, the first is still kept and the connection carries on without Companion Link.',
 		},
 		{
 			type: 'checkbox',
 			id: 'pairStart',
 			label: 'Begin pairing',
-			width: 4,
+			width: 6,
 			default: false,
-			description: 'Tick and save. A PIN will appear on the Apple TV.',
+			description: 'Tick and save. The Apple TV shows the first PIN.',
 			disableAutoExpression: true,
 		},
 		{
 			type: 'textinput',
 			id: 'pairPin',
 			label: 'Pairing PIN',
-			width: 4,
+			width: 6,
 			default: '',
-			description: 'Enter the PIN shown on the TV, then save.',
+			description: 'Enter each PIN shown on the TV, saving after each one. There are two.',
 			disableAutoExpression: true,
 		},
 		{
@@ -157,15 +141,6 @@ export function GetConfigFields(paired: PairingStatus): SomeCompanionConfigField
 			value: '',
 		},
 		{
-			type: 'bonjour-device',
-			id: 'bonjour_companion',
-			label: 'Apple TV (Companion Link)',
-			width: 6,
-			description: 'Leave on "Manual" to discover the Companion Link port automatically when connecting.',
-			isVisibleExpression: `$(options:transport) != 'airplay'`,
-			disableAutoExpression: true,
-		},
-		{
 			type: 'number',
 			id: 'companionPort',
 			label: 'Companion Link port',
@@ -173,8 +148,10 @@ export function GetConfigFields(paired: PairingStatus): SomeCompanionConfigField
 			default: 0,
 			min: 0,
 			max: 65535,
-			description: '0 discovers the port over Bonjour.',
-			isVisibleExpression: `$(options:transport) != 'airplay' && !$(options:bonjour_companion)`,
+			description:
+				'Leave at 0. The port is discovered over Bonjour, and the Apple TV picks a new one every time it ' +
+				'restarts — only set this if Bonjour is blocked on your network, and expect to update it.',
+			isVisibleExpression: `$(options:transport) != 'airplay'`,
 			disableAutoExpression: true,
 		},
 		{
@@ -211,14 +188,6 @@ export function resolveTarget(config: ModuleConfig): { host: string; port: numbe
 
 	const port = config.port && config.port > 0 ? config.port : 7000
 	return { host, port }
-}
-
-/** The Companion Link service is advertised separately, on its own dynamic port. */
-export function resolveCompanionTarget(config: ModuleConfig, fallbackHost: string): { host: string; port: number } {
-	const discovered = splitHostPort(config.bonjour_companion)
-	if (discovered) return discovered
-
-	return { host: fallbackHost, port: config.companionPort > 0 ? config.companionPort : 0 }
 }
 
 function splitHostPort(value: string | null | undefined): { host: string; port: number } | null {

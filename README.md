@@ -22,13 +22,18 @@ The two are peers: `AppleTvDevice` connects, retries and reports each one indepe
 losing one does not disturb the other. The `transport` config picks which to open. Both sets of
 credentials live in a single serialised `Credentials` blob in Companion's secrets store.
 
-### Bonjour filtering
+### Discovery
 
-`bonjourQueries` in the manifest is an array per config field — one query per Apple TV hardware
-identifier — matching the AirPlay `model` txt record and the Companion Link `rpMd` record.
-Without it the pickers list every AirPlay receiver on the network, including Macs, smart TVs and
-AirPlay emulators (which advertise themselves as `AppleTV2,1`). The trade-off is that a hardware
-revision newer than the list will not appear and has to be entered manually.
+`bonjourQueries` in the manifest is an array of queries — one per Apple TV hardware identifier —
+matching the AirPlay `model` txt record. Without it the picker lists every AirPlay receiver on
+the network, including Macs, smart TVs and AirPlay emulators (which advertise themselves as
+`AppleTV2,1`). The trade-off is that a hardware revision newer than the list will not appear and
+has to be entered manually.
+
+The Companion Link port is deliberately _not_ a stored setting. The Apple TV assigns it afresh
+on every restart, so `#discover()` looks it up over mDNS on each connect and the `companionPort`
+config value is only consulted when discovery comes back empty. Storing it would leave the
+connection retrying a dead port with no way to recover on its own.
 
 ## Source layout
 
@@ -44,10 +49,15 @@ revision newer than the list will not appear and has to be entered manually.
 
 ### Pairing
 
-Pairing needs two round trips through the config UI: one save asks the Apple TV to show a PIN,
-a second save carries the PIN back. The pairing socket has to stay open between those saves, so
-`applyConfig()` checks for an outstanding pairing before it does anything to the connection —
-otherwise the reconnect logic would tear the socket down and invalidate the PIN.
+Both protocols are paired in one run, so the flow is three saves: tick **Begin pairing**, enter
+the AirPlay PIN, enter the Companion Link PIN. `#completePairing()` chains straight into
+`beginPairing('companion', …)` once AirPlay succeeds, and only connects after the second PIN (or
+immediately, if the Companion Link pairing could not be started — the AirPlay credentials are
+saved either way).
+
+The pairing socket has to stay open between saves, so `applyConfig()` checks for an outstanding
+pairing before it does anything to the connection — otherwise the reconnect logic would tear the
+socket down and invalidate the PIN.
 
 Saving the config from inside the module (to store credentials and clear the pairing fields)
 comes back as a `configUpdated`. `#connect()` therefore compares a signature of everything the
@@ -72,4 +82,5 @@ a structural check over the action, feedback, variable, preset and config defini
 
 Not yet verified on hardware: Companion Link pairing and connection, **Launch app**, and the
 Companion Link HID fallback for remote keys. These follow pyatv's documented message shapes but
-have not been exercised end to end — reports welcome.
+have not been exercised end to end — reports welcome. The pairing state machine itself is
+covered by a harness that drives the real `ModuleInstance` with the connection layer stubbed.

@@ -62,43 +62,6 @@
 					"model": "AppleTV15,1"
 				}
 			}
-		],
-		"bonjour_companion": [
-			{
-				"type": "companion-link",
-				"protocol": "tcp",
-				"txt": {
-					"rpMd": "AppleTV5,3"
-				}
-			},
-			{
-				"type": "companion-link",
-				"protocol": "tcp",
-				"txt": {
-					"rpMd": "AppleTV6,2"
-				}
-			},
-			{
-				"type": "companion-link",
-				"protocol": "tcp",
-				"txt": {
-					"rpMd": "AppleTV11,1"
-				}
-			},
-			{
-				"type": "companion-link",
-				"protocol": "tcp",
-				"txt": {
-					"rpMd": "AppleTV14,1"
-				}
-			},
-			{
-				"type": "companion-link",
-				"protocol": "tcp",
-				"txt": {
-					"rpMd": "AppleTV15,1"
-				}
-			}
 		]
 	}
 }

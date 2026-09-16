@@ -1,13 +1,6 @@
 import { InstanceBase, InstanceStatus, type SomeCompanionConfigField } from '@companion-module/base'
 import { Credentials } from 'node-appletv-remote'
-import {
-	GetConfigFields,
-	resolveCompanionTarget,
-	resolveTarget,
-	type ModuleConfig,
-	type ModuleSecrets,
-	type PairingStatus,
-} from './config.js'
+import { GetConfigFields, resolveTarget, type ModuleConfig, type ModuleSecrets, type PairingStatus } from './config.js'
 import { UpdateVariableDefinitions, UpdateVariableValues, type VariablesSchema } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions, type ActionsSchema } from './actions.js'
@@ -114,12 +107,10 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 			return
 		}
 
-		const companion = resolveCompanionTarget(config, target.host)
 		const deviceTarget: DeviceTarget = {
 			host: target.host,
 			port: target.port,
-			companionHost: companion.host,
-			companionPort: companion.port,
+			companionPort: Math.max(config.companionPort ?? 0, 0),
 			transport: config.transport ?? 'both',
 			reconnectIntervalMs: Math.max(config.reconnectInterval ?? 10, 2) * 1000,
 			pollIntervalMs: Math.max(config.pollInterval ?? 0, 0) * 1000,
@@ -137,7 +128,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		}
 
 		if (this.device.hasPendingPairing) {
-			this.updateStatus(InstanceStatus.Connecting, 'Enter the PIN shown on the Apple TV')
+			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
 			return
 		}
 
@@ -173,16 +164,15 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		await this.device.stop()
 	}
 
+	/** Pairing always covers both protocols, starting with AirPlay. */
 	async #beginPairing(target: DeviceTarget): Promise<void> {
-		const protocol = this.config.pairProtocol === 'companion' ? 'companion' : 'airplay'
-
 		await this.#shutdown()
 		this.updateStatus(InstanceStatus.Connecting, 'Requesting a pairing PIN')
 
 		try {
-			await this.device.beginPairing(protocol, target)
-			this.log('info', `Pairing started (${protocol}) — enter the PIN shown on the Apple TV`)
-			this.updateStatus(InstanceStatus.Connecting, 'Enter the PIN shown on the Apple TV')
+			await this.device.beginPairing('airplay', target)
+			this.log('info', 'Pairing started — enter the first PIN (AirPlay) shown on the Apple TV')
+			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
 		} catch (e) {
 			this.log('error', `Could not start pairing: ${errorMessage(e)}`)
 			this.updateStatus(InstanceStatus.ConnectionFailure, `Pairing failed: ${errorMessage(e)}`)
@@ -193,27 +183,55 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 	}
 
 	async #completePairing(pin: string, target: DeviceTarget): Promise<void> {
-		if (!this.device.hasPendingPairing) {
+		const protocol = this.device.pendingPairingProtocol
+		if (!protocol) {
 			this.log('error', 'A PIN was entered but pairing has not been started — tick "Begin pairing" first')
 			this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, undefined)
 			this.updateStatus(InstanceStatus.BadConfig, 'Pairing was not started')
 			return
 		}
 
+		let credentials
 		try {
-			const credentials = await this.device.completePairing(pin, this.#readCredentials())
-			const serialised = credentials.serialize()
-
-			this.log('info', `Pairing succeeded (${this.config.pairProtocol === 'companion' ? 'Companion Link' : 'AirPlay'})`)
-			this.secrets = { credentials: serialised }
-			this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, { credentials: serialised })
-
-			await this.#connect(target, true)
+			credentials = await this.device.completePairing(pin, this.#readCredentials())
 		} catch (e) {
 			this.log('error', `Pairing failed: ${errorMessage(e)}`)
 			this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, undefined)
 			this.updateStatus(InstanceStatus.AuthenticationFailure, `Pairing failed: ${errorMessage(e)}`)
+			return
 		}
+
+		const serialised = credentials.serialize()
+		this.log('info', `${protocol === 'companion' ? 'Companion Link' : 'AirPlay'} pairing succeeded`)
+		this.secrets = { credentials: serialised }
+		this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, { credentials: serialised })
+
+		// AirPlay is only half the job: go straight on to the Companion Link PIN.
+		if (protocol === 'airplay' && (await this.#beginCompanionPairing(target))) return
+
+		await this.#connect(target, true)
+	}
+
+	/**
+	 * Returns true when the Apple TV is now showing the second PIN. A failure here is not fatal —
+	 * the AirPlay credentials are already saved, so the connection carries on without Companion Link.
+	 */
+	async #beginCompanionPairing(target: DeviceTarget): Promise<boolean> {
+		try {
+			await this.device.beginPairing('companion', target)
+			this.log('info', 'Now enter the second PIN (Companion Link) shown on the Apple TV')
+			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
+			return true
+		} catch (e) {
+			this.log('warn', `Companion Link pairing could not be started (${errorMessage(e)}); continuing with AirPlay only`)
+			return false
+		}
+	}
+
+	#pinPrompt(): string {
+		return this.device.pendingPairingProtocol === 'companion'
+			? 'Enter the second PIN (Companion Link)'
+			: 'Enter the first PIN (AirPlay)'
 	}
 
 	#readCredentials(): Credentials | undefined {
@@ -240,7 +258,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	onConnectionChanged(): void {
 		if (this.device.hasPendingPairing) {
-			this.updateStatus(InstanceStatus.Connecting, 'Enter the PIN shown on the Apple TV')
+			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
 		} else if (this.device.isOnline) {
 			// With both transports selected, one of them being down is worth surfacing.
 			const missing: string[] = []

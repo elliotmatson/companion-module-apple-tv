@@ -30,10 +30,17 @@ the network, including Macs, smart TVs and AirPlay emulators (which advertise th
 `AppleTV2,1`). The trade-off is that a hardware revision newer than the list will not appear and
 has to be entered manually.
 
-The Companion Link port is deliberately _not_ a stored setting. The Apple TV assigns it afresh
-on every restart, so `#discover()` looks it up over mDNS on each connect and the `companionPort`
-config value is only consulted when discovery comes back empty. Storing it would leave the
+The Companion Link port is deliberately not a stored setting. The Apple TV assigns it afresh on
+every restart, so it is looked up over mDNS on each connect. Storing it would leave the
 connection retrying a dead port with no way to recover on its own.
+
+`src/discovery.ts` does that lookup rather than the library's `scan()`, for two reasons. The
+library only learns a companion-link port for a device it first saw on `_airplay._tcp`, so a
+missed AirPlay announcement costs the Companion Link port as well; browsing both service types
+and matching on address keeps them independent. And announcements simply go missing — measured
+against real hardware, roughly one query in four came back empty however the socket was managed
+— so a lookup makes several short passes and merges what each one saw. A connection that still
+has no port re-runs discovery on every retry rather than looping on a port it never had.
 
 ## Source layout
 

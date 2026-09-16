@@ -57,17 +57,24 @@ says nothing about what was already playing before it existed.
 An idle Apple TV never answers that request, so the timeout is expected and is logged at debug
 level once rather than on repeat.
 
-### A patch to node-appletv-remote
+### Patches to node-appletv-remote
 
-`.yarn/patches` carries a one-line fix to the library's Companion Link frame encryption. Its
-`CompanionSession.encrypt()` writes the plaintext length into the 4-byte frame header, but that
-header is also the AAD, and the Apple TV computes it over the ciphertext _plus_ the 16-byte auth
-tag — see `CompanionConnection.send()` in pyatv. Declaring the short length both under-frames the
-message on the wire and makes the AAD disagree, so the Apple TV silently drops every encrypted
-frame and eventually resets the connection. Pair-verify is unaffected because those frames are
-sent in the clear, which is why the connection looks healthy while nothing it carries works.
+`.yarn/patches` carries two fixes to the library's Companion Link frame encryption. Both leave
+the connection looking perfectly healthy while nothing it carries works, because pair-verify is
+sent in the clear and only the traffic after it is affected.
 
-This should go upstream; until it does, the patch is applied at install time by Yarn.
+1. **Framed length.** `CompanionSession.encrypt()` writes the plaintext length into the 4-byte
+   header, but that header is also the AAD and the Apple TV computes it over the ciphertext
+   _plus_ the 16-byte auth tag — see `CompanionConnection.send()` in pyatv. The short length
+   both under-frames the message on the wire and makes the AAD disagree.
+2. **Nonce layout.** Companion uses a 12-byte nonce that is the counter in little-endian, so the
+   counter sits in the first 8 bytes. The library reuses the HAP/AirPlay helper, which left-pads
+   an 8-byte counter and puts it at offset 4. pyatv makes the distinction explicit by building
+   the companion cipher with `nonce_length=12` instead of the default 8. The two layouts agree
+   only for counter 0, so the first frame of a session works and every frame after it is sealed
+   with a nonce the device does not expect.
+
+Both should go upstream; until then Yarn applies them at install time.
 
 ### Companion Link message format
 

@@ -317,7 +317,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	syncVariablesAndFeedbacks(): void {
 		UpdateVariableValues(this)
-		this.checkFeedbacks('connected', 'companion_connected', 'playback_state', 'media_matches')
+		this.checkFeedbacks('connected', 'companion_connected', 'playback_state', 'power_state', 'media_matches')
 	}
 
 	async restartConnection(): Promise<void> {

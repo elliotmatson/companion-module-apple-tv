@@ -1,5 +1,5 @@
 import type ModuleInstance from './main.js'
-import { PlaybackState } from './device.js'
+import { PlaybackState, type PowerState } from './device.js'
 
 export type VariablesSchema = {
 	connected: string
@@ -8,6 +8,7 @@ export type VariablesSchema = {
 	device_model: string
 	device_ip: string
 
+	power_state: string
 	playback_state: string
 	app_name: string
 	app_bundle_id: string
@@ -34,6 +35,7 @@ export function UpdateVariableDefinitions(self: ModuleInstance): void {
 		device_model: { name: 'Device model' },
 		device_ip: { name: 'Device IP address' },
 
+		power_state: { name: 'Power state (On/Asleep/Unknown)' },
 		playback_state: { name: 'Playback state' },
 		app_name: { name: 'Foreground app name' },
 		app_bundle_id: { name: 'Foreground app bundle ID' },
@@ -66,6 +68,7 @@ export function UpdateVariableValues(self: ModuleInstance): void {
 		device_model: state.model,
 		device_ip: state.host,
 
+		power_state: powerStateLabel(state.powerState),
 		playback_state: playbackStateLabel(state.playbackState),
 		app_name: state.appName,
 		app_bundle_id: state.appBundleId,
@@ -83,6 +86,17 @@ export function UpdateVariableValues(self: ModuleInstance): void {
 		media_percent: duration > 0 ? round((elapsed / duration) * 100, 1) : 0,
 		media_playback_rate: state.playbackRate,
 	})
+}
+
+export function powerStateLabel(state: PowerState): string {
+	switch (state) {
+		case 'on':
+			return 'On'
+		case 'off':
+			return 'Asleep'
+		default:
+			return 'Unknown'
+	}
 }
 
 export function playbackStateLabel(state: PlaybackState): string {

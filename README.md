@@ -92,11 +92,18 @@ All three should go upstream; until then Yarn applies them at install time.
 ### The Companion Link handshake
 
 `#startCompanionSession()` follows pyatv's `CompanionAPI.connect()`: `_systemInfo`, `_touchStart`,
-`_sessionStart`, `TVRCSessionStart`, `_tiStart`, then an `_interest` event registering `_iMC`.
+`_sessionStart`, `TVRCSessionStart`, `_tiStart`, then an `_interest` event registering `_iMC`,
+`SystemStatus` and `TVSystemStatus`, and finally `FetchAttentionState` for the initial power
+state.
 Only the session and the app list are needed for anything this module does, so each step is
 best-effort — but a device that only hears some of them appears to treat the connection as idle
 and closes it after roughly thirty seconds. `_interest` goes out as an event (`_t: 1`), which
 nothing answers, rather than as a request.
+
+Something also has to cross the connection periodically or the Apple TV drops it regardless, so
+`FetchAttentionState` is re-sent every 20 seconds. It doubles as the power state feed: pyatv
+notes newer tvOS may answer "No request handler", which is harmless here because any answer at
+all proves the connection is alive, and the state also arrives as pushed `SystemStatus` events.
 
 ### Companion Link message format
 

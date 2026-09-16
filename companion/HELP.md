@@ -69,12 +69,16 @@ traffic is most likely being blocked between Companion and the Apple TV.
 
 - **Connected to the Apple TV** / **Companion Link connected**
 - **Playback state is** — playing, paused, stopped, interrupted, seeking or unknown
+- **Apple TV is** — on, asleep or unknown. Needs Companion Link
 - **Now playing matches** — compare the title, artist, album, app name or app bundle ID against
   a value, either exactly or as a substring
 
 ### Variables
 
 Connection: `connected`, `companion_connected`, `device_name`, `device_model`, `device_ip`
+
+Power: `power_state` — On, Asleep or Unknown. Reported over Companion Link only, so it stays
+Unknown without it.
 
 Playback: `playback_state`, `app_name`, `app_bundle_id`, `media_title`, `media_artist`,
 `media_album`, `media_playback_rate`

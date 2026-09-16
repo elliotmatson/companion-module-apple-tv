@@ -1,6 +1,6 @@
 import { combineRgb } from '@companion-module/base'
 import type ModuleInstance from './main.js'
-import { PlaybackState } from './device.js'
+import { PlaybackState, type PowerState } from './device.js'
 
 export type MediaField = 'title' | 'artist' | 'album' | 'app_name' | 'app_bundle_id'
 export type MatchMode = 'equals' | 'contains'
@@ -9,6 +9,7 @@ export type FeedbacksSchema = {
 	connected: { type: 'boolean'; options: Record<string, never> }
 	companion_connected: { type: 'boolean'; options: Record<string, never> }
 	playback_state: { type: 'boolean'; options: { state: PlaybackState } }
+	power_state: { type: 'boolean'; options: { state: PowerState } }
 	media_matches: { type: 'boolean'; options: { field: MediaField; mode: MatchMode; value: string } }
 }
 
@@ -56,6 +57,27 @@ export function UpdateFeedbacks(self: ModuleInstance): void {
 				},
 			],
 			callback: (feedback) => self.device.state.playbackState === feedback.options.state,
+		},
+
+		power_state: {
+			name: 'Apple TV is',
+			description: 'Needs Companion Link — the Apple TV reports this over that connection only.',
+			type: 'boolean',
+			defaultStyle: { bgcolor: green, color: black },
+			options: [
+				{
+					id: 'state',
+					type: 'dropdown',
+					label: 'State',
+					default: 'on',
+					choices: [
+						{ id: 'on', label: 'On' },
+						{ id: 'off', label: 'Asleep' },
+						{ id: 'unknown', label: 'Unknown' },
+					],
+				},
+			],
+			callback: (feedback) => self.device.state.powerState === feedback.options.state,
 		},
 
 		media_matches: {

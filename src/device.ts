@@ -28,6 +28,18 @@ const RECONNECT_DELAY_MS = 10000
 /** Companion Link message types, from pyatv's protocol description. */
 const COMPANION_EVENT = 1
 const COMPANION_REQUEST = 2
+/** The Apple TV closes a Companion Link connection it considers idle after about 30 seconds. */
+const COMPANION_KEEPALIVE_MS = 20000
+
+export type PowerState = 'on' | 'off' | 'unknown'
+
+/** SystemStatus values, from pyatv. Anything else is left as unknown. */
+const SYSTEM_STATUS_POWER: Record<number, PowerState | undefined> = {
+	1: 'off', // Asleep
+	2: 'on', // Screensaver
+	3: 'on', // Awake
+	4: 'on', // Idle
+}
 /** The data channel needs a moment after it opens before the Apple TV answers queries. */
 const INITIAL_STATE_DELAY_MS = 1500
 
@@ -70,6 +82,7 @@ export interface DeviceState {
 	album: string
 	appName: string
 	appBundleId: string
+	powerState: PowerState
 
 	duration: number
 	/** Elapsed position at the moment `elapsedAt` was captured */
@@ -128,6 +141,7 @@ export class AppleTvDevice {
 	#airplayTimer: NodeJS.Timeout | undefined
 	#companionTimer: NodeJS.Timeout | undefined
 	#seedTimer: NodeJS.Timeout | undefined
+	#keepaliveTimer: NodeJS.Timeout | undefined
 	#airplayConnecting = false
 	#companionConnecting = false
 	#destroyed = true
@@ -148,6 +162,7 @@ export class AppleTvDevice {
 		name: '',
 		model: '',
 		host: '',
+		powerState: 'unknown',
 		...emptyMedia,
 	}
 
@@ -226,6 +241,7 @@ export class AppleTvDevice {
 		this.#destroyed = true
 		this.#companionPort = undefined
 		this.#companionPortWarned = false
+		this.state.powerState = 'unknown'
 		this.#clearTimers()
 		this.#cancelPairing()
 
@@ -426,13 +442,59 @@ export class AppleTvDevice {
 		// Sent as an event rather than a request: nothing answers it, and registering interest
 		// is what stops the Apple TV treating us as an idle client.
 		try {
-			const interest: OpackDict = new Map<OpackValue, OpackValue>([['_regEvents', ['_iMC', '_tiStarted']]])
+			const interest: OpackDict = new Map<OpackValue, OpackValue>([
+				['_regEvents', ['_iMC', 'SystemStatus', 'TVSystemStatus']],
+			])
 			this.companionEvent('_interest', interest)
 		} catch (e) {
 			this.#host.log('debug', `Companion Link interest registration failed: ${errorMessage(e)}`)
 		}
 
+		// Also the initial power state. pyatv notes newer tvOS may answer "No request handler",
+		// so a failure here is expected rather than a problem.
+		const attention = await this.#companionStep('FetchAttentionState', 'read the power state', [])
+		this.#applySystemStatus(attention?.get('state'))
+
 		await this.#fetchAppList()
+		this.#startKeepalive()
+	}
+
+	/**
+	 * Something has to cross the Companion Link connection every so often or the Apple TV drops
+	 * it. Re-reading the power state doubles as the traffic, and any answer at all -- including
+	 * a refusal -- proves the connection is alive.
+	 */
+	#startKeepalive(): void {
+		this.#stopKeepalive()
+
+		this.#keepaliveTimer = setInterval(() => {
+			void (async () => {
+				try {
+					const response = await this.companionRequest('FetchAttentionState', new Map())
+					this.#applySystemStatus(response.get('state'))
+				} catch (e) {
+					this.#host.log('debug', `Companion Link keepalive got no answer: ${errorMessage(e)}`)
+				}
+			})()
+		}, COMPANION_KEEPALIVE_MS)
+	}
+
+	#stopKeepalive(): void {
+		if (this.#keepaliveTimer) clearInterval(this.#keepaliveTimer)
+		this.#keepaliveTimer = undefined
+	}
+
+	/** SystemStatus arrives both as an answer to FetchAttentionState and as a pushed event. */
+	#applySystemStatus(value: OpackValue | undefined): void {
+		const status = asNumber(value)
+		if (status === undefined) return
+
+		const powerState = SYSTEM_STATUS_POWER[status] ?? 'unknown'
+		if (powerState === this.state.powerState) return
+
+		this.state.powerState = powerState
+		this.#host.log('debug', `Apple TV reports it is ${powerState === 'off' ? 'asleep' : powerState}`)
+		this.#host.onStateChanged()
 	}
 
 	/** One best-effort step of the handshake; a failure is logged and never fatal. */
@@ -516,11 +578,17 @@ export class AppleTvDevice {
 		atv.on('companionClose', () => {
 			if (this.#atv !== atv || !this.state.companionConnected) return
 			this.#host.log('info', 'Companion Link connection closed')
+			this.#stopKeepalive()
 			this.#setConnected(this.state.connected, false)
 			this.#scheduleCompanionRetry()
 		})
 		atv.on('companionEvent', (event: { identifier: string | undefined; data: OpackDict }) => {
 			this.#host.log('debug', `Companion Link event: ${event.identifier ?? '(no identifier)'}`)
+
+			if (event.identifier === 'SystemStatus' || event.identifier === 'TVSystemStatus') {
+				const content = event.data.get('_c')
+				if (content instanceof Map) this.#applySystemStatus(content.get('state'))
+			}
 		})
 		atv.on('companionError', (err: Error) => {
 			this.#host.log('warn', `Companion Link error: ${errorMessage(err)}`)
@@ -558,6 +626,7 @@ export class AppleTvDevice {
 		this.#airplayTimer = undefined
 		this.#companionTimer = undefined
 		this.#seedTimer = undefined
+		this.#stopKeepalive()
 	}
 
 	#setConnected(connected: boolean, companionConnected: boolean): void {

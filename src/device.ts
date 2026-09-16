@@ -765,6 +765,10 @@ export class AppleTvDevice {
 		const pending = this.#pending
 		if (!pending) throw new Error('Pairing has not been started')
 
+		// Taken rather than cancelled: the session is being used, not thrown away, so this must
+		// not go through #cancelPairing() and report itself as abandoned.
+		this.#pending = undefined
+
 		try {
 			const creds = await withTimeout(pending.finish(pin), PAIR_TIMEOUT_MS, 'complete pairing')
 
@@ -778,7 +782,11 @@ export class AppleTvDevice {
 
 			return new Credentials(creds, existing?.companionCredentials)
 		} finally {
-			this.#cancelPairing()
+			try {
+				pending.destroy()
+			} catch {
+				// the socket may already be gone
+			}
 		}
 	}
 

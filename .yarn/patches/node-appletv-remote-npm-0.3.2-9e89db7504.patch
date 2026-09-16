@@ -1,17 +1,43 @@
 diff --git a/dist/companion/companion-session.js b/dist/companion/companion-session.js
-index 4afc08fd965ef8f0afa6b85f30987b64317a2f8d..be75ab0e4b240e93b9e0808f64a806a19e421e5d 100644
+index 4afc08fd965ef8f0afa6b85f30987b64317a2f8d..2e38c32941414649f803d341bb20c964aa1ceae6 100644
 --- a/dist/companion/companion-session.js
 +++ b/dist/companion/companion-session.js
-@@ -23,12 +23,17 @@ export class CompanionSession {
+@@ -5,8 +5,22 @@
+  * - Encrypts whole messages (no 1024-byte chunking)
+  * - Counter-based nonce, separate TX/RX counters
+  */
+-import { encryptChaCha20, decryptChaCha20, generateNonce } from '../util/crypto.js';
++import { encryptChaCha20, decryptChaCha20 } from '../util/crypto.js';
+ const AUTH_TAG_LENGTH = 16;
++/**
++ * The Companion protocol uses a 12-byte nonce that is the counter in little-endian, so the
++ * counter occupies the FIRST 8 bytes. The HAP/AirPlay transport instead left-pads an 8-byte
++ * counter to 12, putting it at offset 4, which is what the shared nonce helper produces.
++ * pyatv draws the same distinction by building the companion cipher with nonce_length=12
++ * rather than the default 8.
++ * The two layouts agree only for counter 0, so the first frame works either way and every
++ * frame after it is sealed with a nonce the Apple TV does not expect.
++ */
++function companionNonce(counter) {
++    const nonce = Buffer.alloc(12, 0);
++    nonce.writeBigUInt64LE(counter, 0);
++    return nonce;
++}
+ export class CompanionSession {
+     outKey;
+     inKey;
+@@ -21,14 +35,18 @@ export class CompanionSession {
+      * Returns a complete frame: 4-byte header + ciphertext + 16-byte auth tag.
+      */
      encrypt(frameType, plaintext) {
-         const nonce = generateNonce(this.outCounter);
+-        const nonce = generateNonce(this.outCounter);
++        const nonce = companionNonce(this.outCounter);
          this.outCounter++;
 -        // Build the frame header (used as AAD)
-+        // Build the frame header (used as AAD).
-+        // The declared length covers the ciphertext AND the trailing auth tag, matching
-+        // pyatv's CompanionConnection.send(). Declaring only the plaintext length both
-+        // under-frames the message on the wire and makes the AAD disagree with the one the
-+        // Apple TV computes, so every encrypted frame is dropped.
++        // Build the frame header, which is also the AAD. The declared length covers the
++        // ciphertext AND the trailing auth tag, matching pyatv's CompanionConnection.send().
++        // Declaring only the plaintext length both under-frames the message on the wire and
++        // makes the AAD disagree with the one the Apple TV computes, so the frame is dropped.
 +        const framedLength = plaintext.length + AUTH_TAG_LENGTH;
          const header = Buffer.alloc(4);
          header[0] = frameType;
@@ -24,3 +50,12 @@ index 4afc08fd965ef8f0afa6b85f30987b64317a2f8d..be75ab0e4b240e93b9e0808f64a806a1
          const { ciphertext, tag } = encryptChaCha20(this.outKey, nonce, plaintext, header);
          return Buffer.concat([header, ciphertext, tag]);
      }
+@@ -38,7 +56,7 @@ export class CompanionSession {
+      * The header bytes are needed as AAD.
+      */
+     decrypt(header, encryptedPayload) {
+-        const nonce = generateNonce(this.inCounter);
++        const nonce = companionNonce(this.inCounter);
+         this.inCounter++;
+         const ciphertext = encryptedPayload.subarray(0, encryptedPayload.length - AUTH_TAG_LENGTH);
+         const tag = encryptedPayload.subarray(encryptedPayload.length - AUTH_TAG_LENGTH);

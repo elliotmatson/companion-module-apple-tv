@@ -254,10 +254,15 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		if (this.device.hasPendingPairing) {
 			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
 		} else if (this.device.isOnline) {
-			// With both transports selected, one of them being down is worth surfacing.
+			// With both transports selected, one of them being down is worth surfacing — but not
+			// while it is still connecting, or the first one up reports the other as broken.
 			const missing: string[] = []
-			if (this.device.wantsAirplay && !this.device.isConnected) missing.push('AirPlay')
-			if (this.device.wantsCompanion && !this.device.isCompanionConnected) missing.push('Companion Link')
+			if (this.device.wantsAirplay && !this.device.isConnected && !this.device.isAirplayConnecting) {
+				missing.push('AirPlay')
+			}
+			if (this.device.wantsCompanion && !this.device.isCompanionConnected && !this.device.isCompanionConnecting) {
+				missing.push('Companion Link')
+			}
 
 			this.updateStatus(InstanceStatus.Ok, missing.length > 0 ? `${missing.join(' and ')} unavailable` : null)
 		} else {
@@ -269,6 +274,11 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	onStateChanged(): void {
 		this.syncVariablesAndFeedbacks()
+	}
+
+	/** The launchable apps are the choices for the "Launch app" action, so re-publish them. */
+	onAppsChanged(): void {
+		this.updateActions()
 	}
 
 	syncVariablesAndFeedbacks(): void {

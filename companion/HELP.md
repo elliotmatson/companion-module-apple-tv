@@ -99,7 +99,12 @@ back to Companion Link's HID commands, which cover up, down, left, right, select
 play, pause, stop, next, previous and the skip keys — need AirPlay and will report an error.
 
 The **on-screen keyboard** actions and all now-playing information come from AirPlay only.
-**Launch app** and **Companion Link request (advanced)** need Companion Link.
+**Launch app**, **Refresh app list** and **Companion Link request (advanced)** need Companion Link.
+
+When Companion Link connects, the module asks the Apple TV which apps are installed and uses
+that as the **Launch app** dropdown, so you pick apps by name rather than hunting for bundle
+IDs. The field still accepts anything typed into it — a bundle ID such as `com.netflix.Netflix`,
+or a URL such as `https://tv.apple.com/…` — which is useful for deep links.
 
 ### Things worth knowing
 

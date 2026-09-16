@@ -15,8 +15,8 @@ no native dependencies, no Python). There are two transports:
 - **AirPlay 2 / MRP** — HAP pair-setup over SRP, then an RTSP session carrying an MRP tunnel.
   This is the primary path: remote keys, media commands, the on-screen keyboard, wake/sleep and
   pushed now-playing updates all go over it.
-- **Companion Link** — a separate TCP connection using OPACK-encoded frames. Launches apps, and
-  supplies `_hidC` key presses as a fallback when AirPlay is unavailable.
+- **Companion Link** — a separate TCP connection using OPACK-encoded frames. Launches apps, lists
+  the installed ones, and supplies `_hidC` key presses as a fallback when AirPlay is unavailable.
 
 The two are peers: `AppleTvDevice` connects, retries and reports each one independently, so
 losing one does not disturb the other. The `transport` config picks which to open. Both sets of
@@ -57,6 +57,18 @@ says nothing about what was already playing before it existed.
 An idle Apple TV never answers that request, so the timeout is expected and is logged at debug
 level once rather than on repeat.
 
+### Companion Link message format
+
+`node-appletv-remote` sends Companion Link requests as a flat OPACK dict — the caller's fields
+alongside `_i` (identifier) and `_x` (transfer id). The Apple TV ignores those: it expects an
+envelope of `_i`, `_x`, `_t` (message type, 2 = request) with the arguments nested under `_c`,
+and replies with its payload under `_c` too. Without it every command times out while the
+connection itself looks perfectly healthy.
+
+`companionRequest()` builds that envelope and unwraps the reply. Because the library appends
+`_i`/`_x` to whatever map it is handed, passing it `{_t, _c}` produces exactly the right shape
+without patching the library.
+
 ### Pairing
 
 Both protocols are paired in one run, so the flow is three saves: tick **Begin pairing**, enter
@@ -90,7 +102,10 @@ Verified against an Apple TV HD (`AppleTV5,3`, tvOS 26.4): Bonjour discovery and
 AirPlay pairing, connection and reconnection. Verified locally: the build, lint, packaging, and
 a structural check over the action, feedback, variable, preset and config definitions.
 
-Not yet verified on hardware: Companion Link pairing and connection, **Launch app**, and the
-Companion Link HID fallback for remote keys. These follow pyatv's documented message shapes but
-have not been exercised end to end — reports welcome. The pairing state machine itself is
-covered by a harness that drives the real `ModuleInstance` with the connection layer stubbed.
+Companion Link pairs and connects against that same hardware. Its commands were timing out until
+the message envelope was corrected; the wire format is now checked by a harness that round-trips
+each request through the library's own OPACK codec and asserts the shape pyatv documents.
+
+Not yet confirmed working on hardware: **Launch app**, the app list, and the Companion Link HID
+fallback for remote keys — the messages are now provably the right shape, but the Apple TV's
+responses have not been seen. Reports welcome.

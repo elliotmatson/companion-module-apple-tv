@@ -12,6 +12,7 @@ export type ActionsSchema = {
 	remote_key: { options: { key: RemoteKeyId } }
 	keyboard_text: { options: { mode: TextMode; text: string } }
 	launch_app: { options: { bundleId: string } }
+	refresh_apps: { options: Record<string, never> }
 	companion_request: { options: { identifier: string; content: string } }
 	refresh_state: { options: Record<string, never> }
 	reconnect: { options: Record<string, never> }
@@ -41,7 +42,15 @@ export const REMOTE_KEY_CHOICES: DropdownChoice<RemoteKeyId>[] = [
 	{ id: 'suspend', label: 'Turn off (sleep)' },
 ]
 
+/** Shown until Companion Link connects and reports what is actually installed. */
+const APP_PLACEHOLDER = 'com.apple.TVWatchList'
+
 export function UpdateActions(self: ModuleInstance): void {
+	const appChoices: DropdownChoice<string>[] =
+		self.device.apps.length > 0
+			? self.device.apps.map((app) => ({ id: app.bundleId, label: app.name }))
+			: [{ id: APP_PLACEHOLDER, label: 'Apple TV app (connect Companion Link for the real list)' }]
+
 	self.setActionDefinitions({
 		remote_key: {
 			name: 'Remote key',
@@ -105,15 +114,18 @@ export function UpdateActions(self: ModuleInstance): void {
 
 		launch_app: {
 			name: 'Launch app',
-			description: 'Requires a Companion Link connection. Apps are identified by bundle ID.',
+			description:
+				'Requires a Companion Link connection. The list is read from the Apple TV once it connects; ' +
+				'you can also type a bundle ID or a URL scheme.',
 			options: [
 				{
 					id: 'bundleId',
-					type: 'textinput',
-					label: 'Bundle ID',
-					default: 'com.apple.TVWatchList',
-					useVariables: true,
-					tooltip: 'For example com.netflix.Netflix, com.google.ios.youtube or com.apple.TVMusic',
+					type: 'dropdown',
+					label: 'App',
+					default: appChoices[0].id,
+					choices: appChoices,
+					allowCustom: true,
+					tooltip: 'A bundle ID such as com.netflix.Netflix, or a URL such as https://tv.apple.com/…',
 				},
 			],
 			callback: async (action) => {
@@ -151,6 +163,15 @@ export function UpdateActions(self: ModuleInstance): void {
 				const content = parseCompanionContent(action.options.content)
 				const response = await self.device.companionRequest(identifier, content)
 				self.log('debug', `Companion Link response: ${describeOpack(response)}`)
+			},
+		},
+
+		refresh_apps: {
+			name: 'Refresh app list',
+			description: 'Re-reads the launchable apps from the Apple TV. Requires Companion Link.',
+			options: [],
+			callback: async () => {
+				await self.device.refreshAppList()
 			},
 		},
 

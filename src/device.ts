@@ -7,8 +7,14 @@ import {
 	type HAPCredentials,
 	type NowPlayingInfo,
 	type OpackDict,
+	type OpackValue,
 } from 'node-appletv-remote'
 import type { RemoteKeyId } from './actions.js'
+
+export interface AppEntry {
+	bundleId: string
+	name: string
+}
 
 export { Key, PlaybackState }
 
@@ -18,6 +24,8 @@ export type Transport = 'airplay' | 'companion' | 'both'
 const CONNECT_TIMEOUT_MS = 20000
 const PAIR_TIMEOUT_MS = 15000
 const RECONNECT_DELAY_MS = 10000
+/** Companion Link message types, from pyatv's protocol description. */
+const COMPANION_REQUEST = 2
 /** The data channel needs a moment after it opens before the Apple TV answers queries. */
 const INITIAL_STATE_DELAY_MS = 1500
 
@@ -72,6 +80,7 @@ export interface DeviceHost {
 	log(level: 'debug' | 'info' | 'warn' | 'error', message: string): void
 	onConnectionChanged(): void
 	onStateChanged(): void
+	onAppsChanged(): void
 }
 
 const emptyMedia = {
@@ -124,6 +133,9 @@ export class AppleTvDevice {
 
 	#pending: PendingPairing | undefined
 
+	/** Launchable apps reported by the Apple TV, used for the "Launch app" choices. */
+	apps: AppEntry[] = []
+
 	state: DeviceState = {
 		connected: false,
 		companionConnected: false,
@@ -148,6 +160,14 @@ export class AppleTvDevice {
 	/** True when at least one transport is up, which is all most actions need. */
 	get isOnline(): boolean {
 		return this.state.connected || this.state.companionConnected
+	}
+
+	get isAirplayConnecting(): boolean {
+		return this.#airplayConnecting
+	}
+
+	get isCompanionConnecting(): boolean {
+		return this.#companionConnecting
 	}
 
 	get hasPendingPairing(): boolean {
@@ -333,30 +353,70 @@ export class AppleTvDevice {
 	}
 
 	/**
-	 * pyatv opens a session before issuing remote commands. Neither request is required for the
-	 * connection itself, so a failure here is logged and otherwise ignored.
+	 * The Apple TV wants to be told who is calling and to have a session opened before it will
+	 * accept commands. The field names and the semi-arbitrary constants come from pyatv.
 	 */
 	async #startCompanionSession(): Promise<void> {
-		const atv = this.#atv
-		if (!atv) return
+		const clientId = this.#credentials?.companionCredentials?.clientId ?? 'companion'
 
 		try {
-			const info: OpackDict = new Map()
-			info.set('_pubID', this.#credentials?.companionCredentials?.clientId ?? 'companion')
-			info.set('name', 'Bitfocus Companion')
-			info.set('model', 'Companion')
-			await atv.sendCompanionRequest('_systemInfo', info)
+			const info: OpackDict = new Map<OpackValue, OpackValue>([
+				['_bf', 0],
+				['_cf', 512],
+				['_clFl', 128],
+				// A null identifier here stops the Apple TV pushing power state events.
+				[
+					'_i',
+					clientId
+						.replace(/[^a-zA-Z0-9]/g, '')
+						.toLowerCase()
+						.slice(0, 12) || 'companion',
+				],
+				['_idsID', clientId],
+				['_pubID', clientId],
+				['_sf', 256],
+				['_sv', '170.18'],
+				['model', 'Companion'],
+				['name', 'Bitfocus Companion'],
+			])
+			await this.companionRequest('_systemInfo', info)
 		} catch (e) {
 			this.#host.log('debug', `Companion Link _systemInfo failed: ${errorMessage(e)}`)
 		}
 
 		try {
-			const content: OpackDict = new Map()
-			content.set('_srvT', 'com.apple.tvremoteservices')
-			content.set('_sid', Math.floor(Math.random() * 0xffffffff))
-			await atv.sendCompanionRequest('_sessionStart', content)
+			const localSid = Math.floor(Math.random() * 0xffffffff)
+			const content: OpackDict = new Map<OpackValue, OpackValue>([
+				['_srvT', 'com.apple.tvremoteservices'],
+				['_sid', localSid],
+			])
+			const response = await this.companionRequest('_sessionStart', content)
+			const remoteSid = asNumber(response.get('_sid'))
+			this.#host.log('debug', `Companion Link session started (remote sid ${remoteSid ?? 'unknown'})`)
 		} catch (e) {
-			this.#host.log('debug', `Companion Link _sessionStart failed: ${errorMessage(e)}`)
+			this.#host.log('warn', `Companion Link session could not be started: ${errorMessage(e)}`)
+			return
+		}
+
+		await this.#fetchAppList()
+	}
+
+	/** The launchable app list doubles as the choices for the "Launch app" action. */
+	async #fetchAppList(): Promise<void> {
+		try {
+			const response = await this.companionRequest('FetchLaunchableApplicationsEvent', new Map())
+
+			const apps: AppEntry[] = []
+			for (const [bundleId, name] of response) {
+				if (typeof bundleId === 'string' && typeof name === 'string') apps.push({ bundleId, name })
+			}
+			apps.sort((a, b) => a.name.localeCompare(b.name))
+
+			this.apps = apps
+			this.#host.log('info', `Found ${apps.length} launchable app${apps.length === 1 ? '' : 's'}`)
+			this.#host.onAppsChanged()
+		} catch (e) {
+			this.#host.log('debug', `Could not fetch the app list: ${errorMessage(e)}`)
 		}
 	}
 
@@ -456,6 +516,10 @@ export class AppleTvDevice {
 		this.state.companionConnected = companionConnected
 
 		if (!connected) Object.assign(this.state, emptyMedia)
+		if (!companionConnected && this.apps.length > 0) {
+			this.apps = []
+			this.#host.onAppsChanged()
+		}
 		if (changed) this.#host.onConnectionChanged()
 	}
 
@@ -616,16 +680,37 @@ export class AppleTvDevice {
 		await this.#requireAirplay('The on-screen keyboard').deleteText()
 	}
 
+	/**
+	 * Companion Link commands travel in an envelope: the identifier and transfer id sit at the
+	 * top level next to a message type, and the actual arguments are nested under `_c`. The
+	 * library adds `_i` and `_x` for us, so we supply the rest and unwrap the reply's `_c`.
+	 */
 	async companionRequest(identifier: string, content: OpackDict): Promise<OpackDict> {
 		const atv = this.#atv
 		if (!atv || !this.state.companionConnected) throw new Error('Companion Link is not connected')
-		return atv.sendCompanionRequest(identifier, content)
+
+		const envelope: OpackDict = new Map<OpackValue, OpackValue>([
+			['_t', COMPANION_REQUEST],
+			['_c', content],
+		])
+
+		const response = await atv.sendCompanionRequest(identifier, envelope)
+		const body = response.get('_c')
+		return body instanceof Map ? body : new Map()
 	}
 
-	async launchApp(bundleId: string): Promise<void> {
-		const content: OpackDict = new Map()
-		content.set('_bundleID', bundleId)
+	async launchApp(bundleIdOrUrl: string): Promise<void> {
+		// A URL or a custom scheme goes in a different field to a bundle identifier.
+		const key = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(bundleIdOrUrl) ? '_urlS' : '_bundleID'
+
+		const content: OpackDict = new Map<OpackValue, OpackValue>([[key, bundleIdOrUrl]])
 		await this.companionRequest('_launchApp', content)
+	}
+
+	/** Re-read the launchable app list, if Companion Link is up. */
+	async refreshAppList(): Promise<void> {
+		if (!this.state.companionConnected) throw new Error('Companion Link is not connected')
+		await this.#fetchAppList()
 	}
 
 	// --- Pairing ---------------------------------------------------------------

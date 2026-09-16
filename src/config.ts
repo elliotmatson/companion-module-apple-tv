@@ -1,4 +1,5 @@
 import { Regex, type SomeCompanionConfigField } from '@companion-module/base'
+import type { Transport } from './device.js'
 
 /** Which transport the pairing flow should pair with. */
 export type PairProtocol = 'airplay' | 'companion'
@@ -8,10 +9,13 @@ export type ModuleConfig = {
 	bonjour_host: string | null
 	host: string
 	port: number
+
+	/** `10.0.0.1:49153` when a bonjour companion-link device is picked */
+	bonjour_companion: string | null
 	/** 0 = discover the companion-link port over mDNS */
 	companionPort: number
-	/** Open the secondary Companion Link connection alongside the AirPlay one */
-	useCompanion: boolean
+
+	transport: Transport
 
 	pairProtocol: PairProtocol
 	pairStart: boolean
@@ -26,7 +30,15 @@ export type ModuleSecrets = {
 	credentials: string
 }
 
-export function GetConfigFields(): SomeCompanionConfigField[] {
+/** What the config page should say about the credentials already stored. */
+export interface PairingStatus {
+	airplay: boolean
+	companion: boolean
+}
+
+export function GetConfigFields(paired: PairingStatus): SomeCompanionConfigField[] {
+	const tick = (ok: boolean) => (ok ? '✅ paired' : '❌ not paired')
+
 	return [
 		{
 			type: 'static-text',
@@ -36,13 +48,13 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			value:
 				'Controls an Apple TV over the local network. Pick your Apple TV below (or enter its IP), then run the ' +
 				'pairing flow: tick <b>Begin pairing</b> and save — a PIN appears on the TV. Type that PIN into ' +
-				'<b>Pairing PIN</b> and save again. Credentials are stored for you and pairing only has to be done once.',
+				'<b>Pairing PIN</b> and save again. Pairing only has to be done once per protocol.',
 		},
 
 		{
 			type: 'bonjour-device',
 			id: 'bonjour_host',
-			label: 'Apple TV',
+			label: 'Apple TV (AirPlay)',
 			width: 6,
 			description: 'Discovered over Bonjour. Choose "Manual" to type an address instead.',
 			disableAutoExpression: true,
@@ -70,13 +82,31 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 		},
 
 		{
+			type: 'dropdown',
+			id: 'transport',
+			label: 'Use',
+			width: 12,
+			default: 'both',
+			choices: [
+				{ id: 'both', label: 'Both — AirPlay for control, Companion Link for launching apps' },
+				{ id: 'airplay', label: 'AirPlay only — remote keys, keyboard and now playing' },
+				{ id: 'companion', label: 'Companion Link only — app launching and basic remote keys' },
+			],
+			description:
+				'With "Both", each connection is made, retried and reported on its own, so losing one does not ' +
+				'disturb the other. Companion Link is skipped until you pair it.',
+			disableAutoExpression: true,
+		},
+
+		{
 			type: 'static-text',
 			id: 'pair_info',
 			label: 'Pairing',
 			width: 12,
 			value:
-				'Pairing talks to the Apple TV directly, so it must be awake and on the same network. ' +
-				'Use <b>AirPlay</b> unless you specifically need Companion Link features.',
+				`AirPlay: <b>${tick(paired.airplay)}</b> &nbsp;&nbsp;|&nbsp;&nbsp; Companion Link: <b>${tick(paired.companion)}</b><br>` +
+				'Each protocol is paired separately and the two are stored side by side, so pairing one does not ' +
+				'undo the other. The Apple TV must be awake and on the same network.',
 		},
 		{
 			type: 'dropdown',
@@ -85,8 +115,8 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			width: 4,
 			default: 'airplay',
 			choices: [
-				{ id: 'airplay', label: 'AirPlay (remote control, now playing)' },
-				{ id: 'companion', label: 'Companion Link (app launching)' },
+				{ id: 'airplay', label: 'AirPlay' },
+				{ id: 'companion', label: 'Companion Link' },
 			],
 			disableAutoExpression: true,
 		},
@@ -114,8 +144,9 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			label: 'Credentials',
 			width: 12,
 			description:
-				'Filled in automatically once pairing succeeds. You can also paste credentials produced by the ' +
-				'node-appletv-remote CLI (`atv pair`) here. Clearing this field unpairs the connection.',
+				'Filled in automatically once pairing succeeds, and holds both protocols. You can also paste ' +
+				'credentials produced by the node-appletv-remote CLI (`atv pair`) here. Clearing this field unpairs ' +
+				'the connection.',
 		},
 
 		{
@@ -126,42 +157,42 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			value: '',
 		},
 		{
-			type: 'checkbox',
-			id: 'useCompanion',
-			label: 'Enable Companion Link',
-			width: 4,
-			default: false,
-			description: 'Opens a second connection used for launching apps. Requires Companion Link credentials.',
+			type: 'bonjour-device',
+			id: 'bonjour_companion',
+			label: 'Apple TV (Companion Link)',
+			width: 6,
+			description: 'Leave on "Manual" to discover the Companion Link port automatically when connecting.',
+			isVisibleExpression: `$(options:transport) != 'airplay'`,
 			disableAutoExpression: true,
 		},
 		{
 			type: 'number',
 			id: 'companionPort',
 			label: 'Companion Link port',
-			width: 4,
+			width: 3,
 			default: 0,
 			min: 0,
 			max: 65535,
 			description: '0 discovers the port over Bonjour.',
-			isVisibleExpression: `!!$(options:useCompanion)`,
+			isVisibleExpression: `$(options:transport) != 'airplay' && !$(options:bonjour_companion)`,
 			disableAutoExpression: true,
 		},
 		{
 			type: 'number',
 			id: 'pollInterval',
 			label: 'Now playing refresh (seconds)',
-			width: 4,
-			default: 10,
+			width: 3,
+			default: 15,
 			min: 0,
 			max: 600,
-			description: 'Periodic state request as a backstop to the push updates. 0 disables it.',
+			description: 'Backstop for the push updates. 0 disables it.',
 			disableAutoExpression: true,
 		},
 		{
 			type: 'number',
 			id: 'reconnectInterval',
 			label: 'Reconnect delay (seconds)',
-			width: 4,
+			width: 3,
 			default: 10,
 			min: 2,
 			max: 600,
@@ -172,17 +203,33 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 
 /** Resolve the address to connect to, honouring the bonjour picker over the manual fields. */
 export function resolveTarget(config: ModuleConfig): { host: string; port: number } | null {
-	if (config.bonjour_host) {
-		const idx = config.bonjour_host.lastIndexOf(':')
-		if (idx > 0) {
-			const host = config.bonjour_host.slice(0, idx)
-			const port = Number(config.bonjour_host.slice(idx + 1))
-			if (host && Number.isFinite(port) && port > 0) return { host, port }
-		}
-	}
+	const discovered = splitHostPort(config.bonjour_host)
+	if (discovered) return discovered
 
 	const host = (config.host ?? '').trim()
 	if (!host) return null
+
 	const port = config.port && config.port > 0 ? config.port : 7000
+	return { host, port }
+}
+
+/** The Companion Link service is advertised separately, on its own dynamic port. */
+export function resolveCompanionTarget(config: ModuleConfig, fallbackHost: string): { host: string; port: number } {
+	const discovered = splitHostPort(config.bonjour_companion)
+	if (discovered) return discovered
+
+	return { host: fallbackHost, port: config.companionPort > 0 ? config.companionPort : 0 }
+}
+
+function splitHostPort(value: string | null | undefined): { host: string; port: number } | null {
+	if (!value) return null
+
+	const idx = value.lastIndexOf(':')
+	if (idx <= 0) return null
+
+	const host = value.slice(0, idx)
+	const port = Number(value.slice(idx + 1))
+	if (!host || !Number.isFinite(port) || port <= 0) return null
+
 	return { host, port }
 }

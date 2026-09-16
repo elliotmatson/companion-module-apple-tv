@@ -26,9 +26,79 @@
 	"products": ["Apple TV 4K", "Apple TV HD", "Apple TV (4th generation)"],
 	"keywords": ["appletv", "apple-tv", "tvos", "airplay", "mrp", "companion-link", "remote", "playback"],
 	"bonjourQueries": {
-		"bonjour_host": {
-			"type": "airplay",
-			"protocol": "tcp"
-		}
+		"bonjour_host": [
+			{
+				"type": "airplay",
+				"protocol": "tcp",
+				"txt": {
+					"model": "AppleTV5,3"
+				}
+			},
+			{
+				"type": "airplay",
+				"protocol": "tcp",
+				"txt": {
+					"model": "AppleTV6,2"
+				}
+			},
+			{
+				"type": "airplay",
+				"protocol": "tcp",
+				"txt": {
+					"model": "AppleTV11,1"
+				}
+			},
+			{
+				"type": "airplay",
+				"protocol": "tcp",
+				"txt": {
+					"model": "AppleTV14,1"
+				}
+			},
+			{
+				"type": "airplay",
+				"protocol": "tcp",
+				"txt": {
+					"model": "AppleTV15,1"
+				}
+			}
+		],
+		"bonjour_companion": [
+			{
+				"type": "companion-link",
+				"protocol": "tcp",
+				"txt": {
+					"rpMd": "AppleTV5,3"
+				}
+			},
+			{
+				"type": "companion-link",
+				"protocol": "tcp",
+				"txt": {
+					"rpMd": "AppleTV6,2"
+				}
+			},
+			{
+				"type": "companion-link",
+				"protocol": "tcp",
+				"txt": {
+					"rpMd": "AppleTV11,1"
+				}
+			},
+			{
+				"type": "companion-link",
+				"protocol": "tcp",
+				"txt": {
+					"rpMd": "AppleTV14,1"
+				}
+			},
+			{
+				"type": "companion-link",
+				"protocol": "tcp",
+				"txt": {
+					"rpMd": "AppleTV15,1"
+				}
+			}
+		]
 	}
 }

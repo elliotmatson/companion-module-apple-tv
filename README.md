@@ -15,11 +15,20 @@ no native dependencies, no Python). There are two transports:
 - **AirPlay 2 / MRP** — HAP pair-setup over SRP, then an RTSP session carrying an MRP tunnel.
   This is the primary path: remote keys, media commands, the on-screen keyboard, wake/sleep and
   pushed now-playing updates all go over it.
-- **Companion Link** — a separate TCP connection using OPACK-encoded frames. Used only for
-  launching apps and the raw-request escape hatch. It is opt-in because it needs its own pairing.
+- **Companion Link** — a separate TCP connection using OPACK-encoded frames. Launches apps, and
+  supplies `_hidC` key presses as a fallback when AirPlay is unavailable.
 
-Both sets of credentials live in a single serialised `Credentials` blob, stored in Companion's
-secrets store rather than in the connection config.
+The two are peers: `AppleTvDevice` connects, retries and reports each one independently, so
+losing one does not disturb the other. The `transport` config picks which to open. Both sets of
+credentials live in a single serialised `Credentials` blob in Companion's secrets store.
+
+### Bonjour filtering
+
+`bonjourQueries` in the manifest is an array per config field — one query per Apple TV hardware
+identifier — matching the AirPlay `model` txt record and the Companion Link `rpMd` record.
+Without it the pickers list every AirPlay receiver on the network, including Macs, smart TVs and
+AirPlay emulators (which advertise themselves as `AppleTV2,1`). The trade-off is that a hardware
+revision newer than the list will not appear and has to be entered manually.
 
 ## Source layout
 
@@ -40,6 +49,11 @@ a second save carries the PIN back. The pairing socket has to stay open between 
 `applyConfig()` checks for an outstanding pairing before it does anything to the connection —
 otherwise the reconnect logic would tear the socket down and invalidate the PIN.
 
+Saving the config from inside the module (to store credentials and clear the pairing fields)
+comes back as a `configUpdated`. `#connect()` therefore compares a signature of everything the
+connection depends on and does nothing when it is unchanged, so a healthy connection is not
+dropped and rebuilt moments after pairing succeeds.
+
 ## Getting started
 
 ```bash
@@ -52,7 +66,10 @@ Point Companion's developer modules path at the folder containing this repositor
 
 ## Testing status
 
-Discovery, the build and the Companion API surface have been exercised locally. The pairing
-handshake and the remote commands have **not** been verified against real Apple TV hardware by
-the author — the underlying library reports them as tested against an Apple TV 4K. Reports from
-anyone who can try it on hardware are very welcome.
+Verified against an Apple TV HD (`AppleTV5,3`, tvOS 26.4): Bonjour discovery and filtering,
+AirPlay pairing, connection and reconnection. Verified locally: the build, lint, packaging, and
+a structural check over the action, feedback, variable, preset and config definitions.
+
+Not yet verified on hardware: Companion Link pairing and connection, **Launch app**, and the
+Companion Link HID fallback for remote keys. These follow pyatv's documented message shapes but
+have not been exercised end to end — reports welcome.

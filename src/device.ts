@@ -8,14 +8,44 @@ import {
 	type NowPlayingInfo,
 	type OpackDict,
 } from 'node-appletv-remote'
+import type { RemoteKeyId } from './actions.js'
 
 export { Key, PlaybackState }
+
+export type Transport = 'airplay' | 'companion' | 'both'
+
+/** An unreachable host would otherwise sit in the OS TCP timeout for well over a minute. */
+const CONNECT_TIMEOUT_MS = 20000
+const PAIR_TIMEOUT_MS = 15000
+
+/**
+ * HID usage codes accepted by the Companion Link `_hidC` command, as documented by pyatv.
+ * Only the keys Companion Link can express are listed; the rest need the AirPlay transport.
+ */
+const COMPANION_HID_CODES: Partial<Record<RemoteKeyId, number>> = {
+	up: 1,
+	down: 2,
+	left: 3,
+	right: 4,
+	menu: 5,
+	select: 6,
+	home: 7,
+	home_hold: 7,
+	volume_up: 8,
+	volume_down: 9,
+	suspend: 12,
+	wake: 13,
+	play_pause: 14,
+}
 
 export interface DeviceTarget {
 	host: string
 	port: number
+	/** Companion Link is usually on the same host, but the two are discovered separately. */
+	companionHost: string
+	/** 0 = discover the companion-link port over mDNS */
 	companionPort: number
-	useCompanion: boolean
+	transport: Transport
 	reconnectIntervalMs: number
 	pollIntervalMs: number
 }
@@ -60,10 +90,6 @@ const emptyMedia = {
 	playbackRate: 0,
 }
 
-/** An unreachable host would otherwise sit in the OS TCP timeout for well over a minute. */
-const CONNECT_TIMEOUT_MS = 20000
-const PAIR_TIMEOUT_MS = 15000
-
 /** The pairing flow is two steps, so the in-progress session has to live somewhere between saves. */
 interface PendingPairing {
 	protocol: 'airplay' | 'companion'
@@ -71,9 +97,18 @@ interface PendingPairing {
 	destroy: () => void
 }
 
+interface DiscoveredInfo {
+	name: string
+	address: string
+	port: number
+	deviceId: string
+	model: string
+	companionPort?: number
+}
+
 /**
- * Owns the connection to a single Apple TV: connecting, reconnecting, pairing and
- * the cached now-playing state. Everything Companion-specific stays in the module.
+ * Owns the connection to a single Apple TV. AirPlay and Companion Link are connected,
+ * retried and reported independently, so losing one does not disturb the other.
  */
 export class AppleTvDevice {
 	readonly #host: DeviceHost
@@ -82,10 +117,13 @@ export class AppleTvDevice {
 	#target: DeviceTarget | undefined
 	#credentials: Credentials | undefined
 
-	#reconnectTimer: NodeJS.Timeout | undefined
+	#airplayTimer: NodeJS.Timeout | undefined
+	#companionTimer: NodeJS.Timeout | undefined
 	#pollTimer: NodeJS.Timeout | undefined
-	#connecting = false
-	#destroyed = false
+	#airplayConnecting = false
+	#companionConnecting = false
+	#destroyed = true
+	#stateRequestFailed = false
 
 	#pending: PendingPairing | undefined
 
@@ -110,8 +148,22 @@ export class AppleTvDevice {
 		return this.state.companionConnected
 	}
 
+	/** True when at least one transport is up, which is all most actions need. */
+	get isOnline(): boolean {
+		return this.state.connected || this.state.companionConnected
+	}
+
 	get hasPendingPairing(): boolean {
 		return this.#pending !== undefined
+	}
+
+	get wantsAirplay(): boolean {
+		return this.#target !== undefined && this.#target.transport !== 'companion'
+	}
+
+	get wantsCompanion(): boolean {
+		if (!this.#target || this.#target.transport === 'airplay') return false
+		return this.#credentials?.companionCredentials !== undefined
 	}
 
 	/** Position in seconds, extrapolated from the last update using the playback rate. */
@@ -139,7 +191,7 @@ export class AppleTvDevice {
 		this.#credentials = credentials
 		this.state.host = target.host
 
-		void this.connect()
+		void this.#openConnections()
 	}
 
 	async stop(): Promise<void> {
@@ -161,64 +213,158 @@ export class AppleTvDevice {
 		this.#setConnected(false, false)
 	}
 
-	async connect(): Promise<void> {
+	async #openConnections(): Promise<void> {
 		const target = this.#target
-		if (!target || this.#destroyed || this.#connecting) return
-		if (!this.#credentials) return
-
-		this.#connecting = true
-		this.#clearTimers()
+		const credentials = this.#credentials
+		if (!target || !credentials || this.#destroyed) return
 
 		try {
-			// Bonjour fills in the friendly name, model and the companion-link port, none of
-			// which can be derived from the address alone. A failed scan is not fatal.
 			const info = await this.#discover(target)
+			if (this.#destroyed) return
 
 			const atv = new AppleTV(info)
 			this.#atv = atv
 			this.#attachListeners(atv)
 
-			try {
-				await withTimeout(atv.connect(this.#credentials), CONNECT_TIMEOUT_MS, `connect to ${target.host}`)
-			} catch (e) {
-				// An abandoned socket would keep the OS TCP timeout running in the background.
-				await atv.close().catch(() => undefined)
-				throw e
-			}
-
 			this.state.name = info.name
 			this.state.model = info.model
-			this.#setConnected(true, this.state.companionConnected)
-			this.#host.log('info', `Connected to ${info.name || target.host} (${info.model || 'Apple TV'})`)
 
 			// Bonjour lists every AirPlay receiver, including Macs and third-party TVs, which
 			// accept the connection but ignore most remote commands.
 			if (info.model && !info.model.startsWith('AppleTV')) {
 				this.#host.log('warn', `${info.model} is an AirPlay receiver but not an Apple TV; commands may be ignored`)
 			}
+		} catch (e) {
+			this.#host.log('error', `Could not prepare the connection: ${errorMessage(e)}`)
+			this.#scheduleAirplayRetry()
+			return
+		}
 
-			if (target.useCompanion) await this.#connectCompanion(atv, this.#credentials)
+		// Each transport stands on its own — one failing must not block the other.
+		await Promise.all([this.connectAirplay(), this.connectCompanion()])
+	}
+
+	async connectAirplay(): Promise<void> {
+		const atv = this.#atv
+		const target = this.#target
+		const credentials = this.#credentials
+		if (!atv || !target || !credentials || this.#destroyed) return
+		if (!this.wantsAirplay || this.state.connected || this.#airplayConnecting) return
+
+		this.#airplayConnecting = true
+		if (this.#airplayTimer) clearTimeout(this.#airplayTimer)
+		this.#airplayTimer = undefined
+
+		try {
+			try {
+				await withTimeout(atv.connect(credentials), CONNECT_TIMEOUT_MS, `connect to ${target.host}`)
+			} catch (e) {
+				// An abandoned socket would keep the OS TCP timeout running in the background.
+				await atv.close().catch(() => undefined)
+				throw e
+			}
+
+			this.#setConnected(true, this.state.companionConnected)
+			this.#host.log('info', `AirPlay connected to ${this.state.name || target.host}`)
 
 			this.#startPolling()
-			void this.refreshState()
+			// The Apple TV needs a moment after the data channel opens before it answers queries.
+			setTimeout(() => void this.refreshState(), 1500)
 		} catch (e) {
-			this.#host.log('error', `Connection failed: ${errorMessage(e)}`)
-			this.#setConnected(false, false)
-			this.#scheduleReconnect()
+			this.#host.log('error', `AirPlay connection failed: ${errorMessage(e)}`)
+			this.#setConnected(false, this.state.companionConnected)
+			this.#scheduleAirplayRetry()
 		} finally {
-			this.#connecting = false
+			this.#airplayConnecting = false
 		}
 	}
 
-	async #discover(target: DeviceTarget): Promise<{
-		name: string
-		address: string
-		port: number
-		deviceId: string
-		model: string
-		companionPort?: number
-	}> {
-		const fallback = {
+	async connectCompanion(): Promise<void> {
+		const atv = this.#atv
+		const target = this.#target
+		if (!atv || !target || this.#destroyed) return
+		if (target.transport === 'airplay') return
+		if (this.state.companionConnected || this.#companionConnecting) return
+
+		const companionCreds = this.#credentials?.companionCredentials
+		if (!companionCreds) {
+			// 'both' is the default, so a missing Companion Link pairing is normal, not an error.
+			const message = 'Companion Link has not been paired yet'
+			if (target.transport === 'companion') this.#host.log('error', message)
+			else this.#host.log('debug', message)
+			return
+		}
+
+		const port = atv.companionPort ?? (target.companionPort > 0 ? target.companionPort : undefined)
+		if (!port) {
+			this.#host.log('warn', 'Could not find the Companion Link port; set it manually in the module config')
+			return
+		}
+
+		// Both connections are made to the AirPlay address, so picking a Companion Link device
+		// on a different host would quietly talk to the wrong Apple TV.
+		if (target.companionHost !== target.host) {
+			this.#host.log(
+				'warn',
+				`Companion Link was selected on ${target.companionHost} but the connection is to ${target.host}; ` +
+					'pick the matching device or the wrong Apple TV may respond',
+			)
+		}
+
+		this.#companionConnecting = true
+		if (this.#companionTimer) clearTimeout(this.#companionTimer)
+		this.#companionTimer = undefined
+
+		try {
+			await withTimeout(
+				atv.connectCompanion(companionCreds, port),
+				CONNECT_TIMEOUT_MS,
+				`connect to Companion Link on ${target.companionHost}:${port}`,
+			)
+
+			this.#setConnected(this.state.connected, true)
+			this.#host.log('info', 'Companion Link connected')
+
+			await this.#startCompanionSession()
+		} catch (e) {
+			this.#host.log('warn', `Companion Link connection failed: ${errorMessage(e)}`)
+			this.#setConnected(this.state.connected, false)
+			this.#scheduleCompanionRetry()
+		} finally {
+			this.#companionConnecting = false
+		}
+	}
+
+	/**
+	 * pyatv opens a session before issuing remote commands. Neither request is required for the
+	 * connection itself, so a failure here is logged and otherwise ignored.
+	 */
+	async #startCompanionSession(): Promise<void> {
+		const atv = this.#atv
+		if (!atv) return
+
+		try {
+			const info: OpackDict = new Map()
+			info.set('_pubID', this.#credentials?.companionCredentials?.clientId ?? 'companion')
+			info.set('name', 'Bitfocus Companion')
+			info.set('model', 'Companion')
+			await atv.sendCompanionRequest('_systemInfo', info)
+		} catch (e) {
+			this.#host.log('debug', `Companion Link _systemInfo failed: ${errorMessage(e)}`)
+		}
+
+		try {
+			const content: OpackDict = new Map()
+			content.set('_srvT', 'com.apple.tvremoteservices')
+			content.set('_sid', Math.floor(Math.random() * 0xffffffff))
+			await atv.sendCompanionRequest('_sessionStart', content)
+		} catch (e) {
+			this.#host.log('debug', `Companion Link _sessionStart failed: ${errorMessage(e)}`)
+		}
+	}
+
+	async #discover(target: DeviceTarget): Promise<DiscoveredInfo> {
+		const fallback: DiscoveredInfo = {
 			name: this.state.name,
 			address: target.host,
 			port: target.port,
@@ -228,7 +374,7 @@ export class AppleTvDevice {
 		}
 
 		// Only worth the mDNS round trip when we are missing something it can tell us.
-		const needsCompanionPort = target.useCompanion && target.companionPort <= 0
+		const needsCompanionPort = target.transport !== 'airplay' && target.companionPort <= 0
 		if (!needsCompanionPort && fallback.name) return fallback
 
 		try {
@@ -252,36 +398,22 @@ export class AppleTvDevice {
 		}
 	}
 
-	async #connectCompanion(atv: AppleTV, credentials: Credentials): Promise<void> {
-		const companionCreds = credentials.companionCredentials
-		if (!companionCreds) {
-			this.#host.log('warn', 'Companion Link is enabled but no Companion Link credentials are stored')
-			return
-		}
-
-		try {
-			await atv.connectCompanion(companionCreds)
-			this.#setConnected(this.state.connected, true)
-			this.#host.log('info', 'Companion Link connected')
-		} catch (e) {
-			this.#host.log('warn', `Companion Link connection failed: ${errorMessage(e)}`)
-			this.#setConnected(this.state.connected, false)
-		}
-	}
-
 	#attachListeners(atv: AppleTV): void {
 		atv.on('error', (err: Error) => {
 			this.#host.log('error', `Apple TV error: ${errorMessage(err)}`)
 		})
 		atv.on('close', () => {
-			if (this.#atv !== atv) return
-			this.#host.log('info', 'Connection closed')
-			this.#setConnected(false, false)
-			this.#scheduleReconnect()
+			if (this.#atv !== atv || !this.state.connected) return
+			this.#host.log('info', 'AirPlay connection closed')
+			this.#setConnected(false, this.state.companionConnected)
+			this.#stopPolling()
+			this.#scheduleAirplayRetry()
 		})
 		atv.on('companionClose', () => {
-			if (this.#atv !== atv) return
+			if (this.#atv !== atv || !this.state.companionConnected) return
+			this.#host.log('info', 'Companion Link connection closed')
 			this.#setConnected(this.state.connected, false)
+			this.#scheduleCompanionRetry()
 		})
 		atv.on('companionError', (err: Error) => {
 			this.#host.log('warn', `Companion Link error: ${errorMessage(err)}`)
@@ -294,17 +426,27 @@ export class AppleTvDevice {
 		})
 	}
 
-	#scheduleReconnect(): void {
-		if (this.#destroyed || this.#reconnectTimer) return
-		const delay = this.#target?.reconnectIntervalMs ?? 10000
+	#scheduleAirplayRetry(): void {
+		if (this.#destroyed || this.#airplayTimer || !this.wantsAirplay) return
 
-		this.#reconnectTimer = setTimeout(() => {
-			this.#reconnectTimer = undefined
-			void this.connect()
-		}, delay)
+		this.#airplayTimer = setTimeout(() => {
+			this.#airplayTimer = undefined
+			void this.connectAirplay()
+		}, this.#target?.reconnectIntervalMs ?? 10000)
+	}
+
+	#scheduleCompanionRetry(): void {
+		if (this.#destroyed || this.#companionTimer || !this.wantsCompanion) return
+
+		this.#companionTimer = setTimeout(() => {
+			this.#companionTimer = undefined
+			void this.connectCompanion()
+		}, this.#target?.reconnectIntervalMs ?? 10000)
 	}
 
 	#startPolling(): void {
+		this.#stopPolling()
+
 		const interval = this.#target?.pollIntervalMs ?? 0
 		if (interval <= 0) return
 
@@ -313,11 +455,17 @@ export class AppleTvDevice {
 		}, interval)
 	}
 
-	#clearTimers(): void {
-		if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer)
+	#stopPolling(): void {
 		if (this.#pollTimer) clearInterval(this.#pollTimer)
-		this.#reconnectTimer = undefined
 		this.#pollTimer = undefined
+	}
+
+	#clearTimers(): void {
+		if (this.#airplayTimer) clearTimeout(this.#airplayTimer)
+		if (this.#companionTimer) clearTimeout(this.#companionTimer)
+		this.#airplayTimer = undefined
+		this.#companionTimer = undefined
+		this.#stopPolling()
 	}
 
 	#setConnected(connected: boolean, companionConnected: boolean): void {
@@ -338,9 +486,14 @@ export class AppleTvDevice {
 
 		try {
 			const response = await atv.getState()
+			this.#stateRequestFailed = false
 			this.#applyRawMessage({ type: 4, payload: response })
 		} catch (e) {
-			this.#host.log('debug', `State request failed: ${errorMessage(e)}`)
+			// An idle Apple TV simply never answers, so only mention it when the status changes.
+			if (!this.#stateRequestFailed) {
+				this.#stateRequestFailed = true
+				this.#host.log('debug', `State request got no answer (nothing playing?): ${errorMessage(e)}`)
+			}
 		}
 	}
 
@@ -419,32 +572,66 @@ export class AppleTvDevice {
 
 	// --- Commands --------------------------------------------------------------
 
-	#requireConnection(): AppleTV {
+	#requireAirplay(what: string): AppleTV {
 		const atv = this.#atv
-		if (!atv || !this.state.connected) throw new Error('Not connected to the Apple TV')
+		if (!atv || !this.state.connected) {
+			throw new Error(
+				this.state.companionConnected
+					? `${what} needs the AirPlay connection, which is not available`
+					: 'Not connected to the Apple TV',
+			)
+		}
 		return atv
 	}
 
-	async sendKey(key: Key): Promise<void> {
-		await this.#requireConnection().sendKeyCommand(key)
+	/** Prefers AirPlay, falling back to the Companion Link HID commands when it is the only link. */
+	async sendKey(key: RemoteKeyId): Promise<void> {
+		const atv = this.#atv
+
+		if (atv && this.state.connected) {
+			if (key === 'stop') await atv.stop()
+			else await atv.sendKeyCommand(key as Key)
+			return
+		}
+
+		if (atv && this.state.companionConnected) {
+			await this.#sendCompanionKey(key)
+			return
+		}
+
+		throw new Error('Not connected to the Apple TV')
 	}
 
-	async stopPlayback(): Promise<void> {
-		await this.#requireConnection().stop()
+	async #sendCompanionKey(key: RemoteKeyId): Promise<void> {
+		const code = COMPANION_HID_CODES[key]
+		if (code === undefined) {
+			throw new Error(`"${key}" can only be sent over the AirPlay connection`)
+		}
+
+		const press = async (buttonState: number): Promise<void> => {
+			const content: OpackDict = new Map()
+			content.set('_hBtS', buttonState)
+			content.set('_hidC', code)
+			await this.companionRequest('_hidC', content)
+		}
+
+		await press(1)
+		if (key === 'home_hold') await delay(1000)
+		await press(2)
 	}
 
 	async sendText(text: string, mode: 'set' | 'insert'): Promise<void> {
-		const atv = this.#requireConnection()
+		const atv = this.#requireAirplay('The on-screen keyboard')
 		if (mode === 'set') await atv.setText(text)
 		else await atv.insertText(text)
 	}
 
 	async clearText(): Promise<void> {
-		await this.#requireConnection().clearText()
+		await this.#requireAirplay('The on-screen keyboard').clearText()
 	}
 
 	async deleteText(): Promise<void> {
-		await this.#requireConnection().deleteText()
+		await this.#requireAirplay('The on-screen keyboard').deleteText()
 	}
 
 	async companionRequest(identifier: string, content: OpackDict): Promise<OpackDict> {
@@ -466,9 +653,9 @@ export class AppleTvDevice {
 		this.#cancelPairing()
 
 		// AirPlay pairing needs nothing Bonjour could add, so skip the scan and its delay.
-		const info =
+		const info: DiscoveredInfo =
 			protocol === 'companion'
-				? await this.#discover({ ...target, useCompanion: true })
+				? await this.#discover({ ...target, host: target.companionHost, transport: 'companion' })
 				: { name: '', address: target.host, port: target.port, deviceId: '', model: '' }
 
 		const atv = new AppleTV(info)
@@ -477,13 +664,14 @@ export class AppleTvDevice {
 		})
 
 		if (protocol === 'companion') {
-			if (!info.companionPort) {
+			const port = info.companionPort ?? (target.companionPort > 0 ? target.companionPort : undefined)
+			if (!port) {
 				throw new Error('Could not find the Companion Link port. Set it manually in the module config.')
 			}
 			const session = await withTimeout(
-				atv.startCompanionPairing({ companionPort: info.companionPort }),
+				atv.startCompanionPairing({ companionPort: port }),
 				PAIR_TIMEOUT_MS,
-				`request a PIN from ${target.host}`,
+				`request a PIN from ${target.companionHost}`,
 			)
 			this.#pending = {
 				protocol,
@@ -550,6 +738,10 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Pr
 	} finally {
 		if (timer) clearTimeout(timer)
 	}
+}
+
+async function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export function errorMessage(e: unknown): string {

@@ -1,9 +1,9 @@
 import type { DropdownChoice } from '@companion-module/base'
 import type ModuleInstance from './main.js'
-import { Key, errorMessage } from './device.js'
-import type { OpackDict, OpackValue } from 'node-appletv-remote'
+import { errorMessage } from './device.js'
+import type { Key, OpackDict, OpackValue } from 'node-appletv-remote'
 
-/** `stop` has no entry in the library's Key enum, so it is handled separately. */
+/** `stop` has no entry in the library's Key enum, so the device layer handles it separately. */
 export type RemoteKeyId = `${Key}` | 'stop'
 
 export type TextMode = 'set' | 'insert' | 'clear' | 'delete'
@@ -56,12 +56,7 @@ export function UpdateActions(self: ModuleInstance): void {
 				},
 			],
 			callback: async (action) => {
-				const key = action.options.key
-				if (key === 'stop') {
-					await self.device.stopPlayback()
-				} else {
-					await self.device.sendKey(key as Key)
-				}
+				await self.device.sendKey(action.options.key)
 				// A key press usually changes what is playing; ask for the new state shortly after.
 				self.scheduleStateRefresh()
 			},

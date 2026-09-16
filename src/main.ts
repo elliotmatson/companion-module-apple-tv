@@ -1,12 +1,20 @@
 import { InstanceBase, InstanceStatus, type SomeCompanionConfigField } from '@companion-module/base'
 import { Credentials } from 'node-appletv-remote'
-import { GetConfigFields, resolveTarget, type ModuleConfig, type ModuleSecrets } from './config.js'
+import {
+	GetConfigFields,
+	resolveCompanionTarget,
+	resolveTarget,
+	type ModuleConfig,
+	type ModuleSecrets,
+	type PairingStatus,
+} from './config.js'
 import { UpdateVariableDefinitions, UpdateVariableValues, type VariablesSchema } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions, type ActionsSchema } from './actions.js'
 import { UpdateFeedbacks, type FeedbacksSchema } from './feedbacks.js'
 import { UpdatePresets } from './presets.js'
 import { AppleTvDevice, errorMessage, type DeviceHost, type DeviceTarget } from './device.js'
+import { captureLibraryLogging } from './library-logging.js'
 
 export type ModuleSchema = {
 	config: ModuleConfig
@@ -26,12 +34,18 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	#tickTimer: NodeJS.Timeout | undefined
 	#refreshTimer: NodeJS.Timeout | undefined
+	#releaseLibraryLogging: (() => void) | undefined
+
+	/** Everything the running connection depends on, so a no-op save does not restart it. */
+	#connectionSignature: string | undefined
 
 	constructor(internal: unknown) {
 		super(internal)
 	}
 
 	async init(config: ModuleConfig, _isFirstInit: boolean, secrets: ModuleSecrets): Promise<void> {
+		this.#releaseLibraryLogging = captureLibraryLogging((message) => this.log('debug', message))
+
 		this.updateActions()
 		this.updateFeedbacks()
 		this.updatePresets()
@@ -51,6 +65,9 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		this.#tickTimer = undefined
 		this.#refreshTimer = undefined
 
+		this.#releaseLibraryLogging?.()
+		this.#releaseLibraryLogging = undefined
+
 		await this.device.stop()
 	}
 
@@ -59,7 +76,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 	}
 
 	getConfigFields(): SomeCompanionConfigField[] {
-		return GetConfigFields()
+		return GetConfigFields(this.#pairingStatus())
 	}
 
 	updateActions(): void {
@@ -91,17 +108,19 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 		const target = resolveTarget(config)
 		if (!target) {
-			await this.device.stop()
+			await this.#shutdown()
 			this.updateStatus(InstanceStatus.BadConfig, 'No Apple TV selected')
 			this.syncVariablesAndFeedbacks()
 			return
 		}
 
+		const companion = resolveCompanionTarget(config, target.host)
 		const deviceTarget: DeviceTarget = {
 			host: target.host,
 			port: target.port,
-			companionPort: config.companionPort ?? 0,
-			useCompanion: !!config.useCompanion,
+			companionHost: companion.host,
+			companionPort: companion.port,
+			transport: config.transport ?? 'both',
 			reconnectIntervalMs: Math.max(config.reconnectInterval ?? 10, 2) * 1000,
 			pollIntervalMs: Math.max(config.pollInterval ?? 0, 0) * 1000,
 		}
@@ -125,23 +144,39 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		await this.#connect(deviceTarget)
 	}
 
-	async #connect(target: DeviceTarget): Promise<void> {
+	/**
+	 * Saving the config from inside the module comes back as a `configUpdated`, so restarting
+	 * unconditionally would tear down a healthy connection moments after pairing succeeded.
+	 */
+	async #connect(target: DeviceTarget, force = false): Promise<void> {
 		const credentials = this.#readCredentials()
 		if (!credentials) {
-			await this.device.stop()
+			await this.#shutdown()
 			this.updateStatus(InstanceStatus.BadConfig, 'Not paired — tick "Begin pairing" and save')
 			this.syncVariablesAndFeedbacks()
 			return
 		}
 
+		const signature = JSON.stringify([target, this.secrets.credentials])
+		if (!force && signature === this.#connectionSignature) {
+			this.log('debug', 'Config saved with no connection changes, leaving the connection alone')
+			return
+		}
+		this.#connectionSignature = signature
+
 		this.updateStatus(InstanceStatus.Connecting)
 		await this.device.start(target, credentials)
+	}
+
+	async #shutdown(): Promise<void> {
+		this.#connectionSignature = undefined
+		await this.device.stop()
 	}
 
 	async #beginPairing(target: DeviceTarget): Promise<void> {
 		const protocol = this.config.pairProtocol === 'companion' ? 'companion' : 'airplay'
 
-		await this.device.stop()
+		await this.#shutdown()
 		this.updateStatus(InstanceStatus.Connecting, 'Requesting a pairing PIN')
 
 		try {
@@ -169,11 +204,11 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 			const credentials = await this.device.completePairing(pin, this.#readCredentials())
 			const serialised = credentials.serialize()
 
-			this.log('info', 'Pairing succeeded')
+			this.log('info', `Pairing succeeded (${this.config.pairProtocol === 'companion' ? 'Companion Link' : 'AirPlay'})`)
 			this.secrets = { credentials: serialised }
 			this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, { credentials: serialised })
 
-			await this.#connect(target)
+			await this.#connect(target, true)
 		} catch (e) {
 			this.log('error', `Pairing failed: ${errorMessage(e)}`)
 			this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, undefined)
@@ -193,15 +228,26 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		}
 	}
 
+	#pairingStatus(): PairingStatus {
+		const credentials = this.#readCredentials()
+		return {
+			airplay: credentials !== undefined,
+			companion: credentials?.companionCredentials !== undefined,
+		}
+	}
+
 	// --- Device host callbacks -------------------------------------------------
 
 	onConnectionChanged(): void {
-		if (this.device.isConnected) {
-			const suffix =
-				this.config?.useCompanion && !this.device.isCompanionConnected ? ' (Companion Link unavailable)' : ''
-			this.updateStatus(InstanceStatus.Ok, suffix ? suffix.trim() : null)
-		} else if (this.device.hasPendingPairing) {
+		if (this.device.hasPendingPairing) {
 			this.updateStatus(InstanceStatus.Connecting, 'Enter the PIN shown on the Apple TV')
+		} else if (this.device.isOnline) {
+			// With both transports selected, one of them being down is worth surfacing.
+			const missing: string[] = []
+			if (this.device.wantsAirplay && !this.device.isConnected) missing.push('AirPlay')
+			if (this.device.wantsCompanion && !this.device.isCompanionConnected) missing.push('Companion Link')
+
+			this.updateStatus(InstanceStatus.Ok, missing.length > 0 ? `${missing.join(' and ')} unavailable` : null)
 		} else {
 			this.updateStatus(InstanceStatus.Disconnected)
 		}
@@ -232,6 +278,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 	}
 
 	async restartConnection(): Promise<void> {
+		this.#connectionSignature = undefined
 		await this.applyConfig(this.config, this.secrets)
 	}
 }

@@ -9,34 +9,44 @@ Works with Apple TV 4K, Apple TV HD and the 4th-generation Apple TV on current t
 ### Setting it up
 
 1. Make sure the Apple TV is awake and on the same network as Companion.
-2. In the connection config, pick your Apple TV from the **Apple TV** dropdown. If Bonjour
-   discovery is blocked on your network, choose _Manual_ and type the IP address instead.
+2. In the connection config, pick your Apple TV from the **Apple TV (AirPlay)** dropdown. The
+   list is filtered to Apple TVs, so Macs, HomePods and smart TVs that also answer AirPlay are
+   left out. If Bonjour discovery is blocked on your network, choose _Manual_ and type the IP.
 3. Leave **Pair with** on _AirPlay_, tick **Begin pairing**, and press Save.
 4. A four-digit PIN appears on the TV screen. Type it into **Pairing PIN** and press Save again.
-5. The connection should go green. Pairing only has to be done once — the credentials are
-   stored with the connection.
+5. The connection should go green. Pairing only has to be done once — the **Pairing** section
+   shows which protocols have credentials stored.
 
 If you already have credentials from the `node-appletv-remote` CLI (`atv pair`), you can paste
 the contents of `~/.atv-credentials.json` straight into the **Credentials** field and skip the
 pairing flow. Clearing that field unpairs the connection.
 
-> The Bonjour dropdown lists every AirPlay receiver it can see, which on a typical network
-> includes Macs, HomePods and smart TVs. Pick the one that is actually an Apple TV — the module
-> logs a warning if it connects to something else.
+> The filter matches the Apple TV models that support these protocols: Apple TV HD (4th gen)
+> and every Apple TV 4K. If Apple ships a model newer than this module knows about, it will not
+> appear in the list — use _Manual_ and enter the IP.
 
-### Companion Link (optional)
+### Using both protocols
 
-Companion Link is a second connection used for **Launch app**. It needs its own pairing:
+The **Use** setting picks which connections to open:
 
-1. Set **Pair with** to _Companion Link_, tick **Begin pairing**, save, and enter the PIN as before.
-2. Tick **Enable Companion Link** and save.
+| Setting                 | What you get                                                   |
+| ----------------------- | -------------------------------------------------------------- |
+| **Both** (default)      | AirPlay for everything, Companion Link for launching apps      |
+| **AirPlay only**        | Remote keys, keyboard, now playing, wake/sleep                 |
+| **Companion Link only** | App launching, plus the remote keys Companion Link can express |
 
-Both sets of credentials are kept side by side, so pairing with Companion Link does not
-undo the AirPlay pairing.
+With **Both**, the two connections are opened, retried and reported independently — if one
+drops, the other keeps working and only the missing one reconnects. The status line names
+whichever is unavailable.
 
-Companion Link support is less exercised than the AirPlay path. **Companion Link request
-(advanced)** is provided as an escape hatch for experimenting with undocumented messages;
-the response is written to the connection log at debug level.
+Companion Link needs its own pairing. Set **Pair with** to _Companion Link_, tick **Begin
+pairing**, save, and enter the PIN as before. The two sets of credentials are stored side by
+side, so pairing one never undoes the other. Until you pair it, Companion Link is simply
+skipped — it is not an error.
+
+Normally you can leave **Apple TV (Companion Link)** on _Manual_ and the port is discovered
+when connecting. Set it explicitly only if discovery is unreliable on your network; make sure
+it is the same Apple TV you picked for AirPlay.
 
 ### Actions
 
@@ -72,6 +82,16 @@ updates the Apple TV sends, so it stays smooth while something is playing.
 Ready-made buttons for the full remote layout, transport controls, volume, power, keyboard
 editing, now-playing text and a connection status button that reconnects when pressed.
 
+### What each protocol can do
+
+**Remote key** prefers AirPlay. When Companion Link is the only connection available it falls
+back to Companion Link's HID commands, which cover up, down, left, right, select, menu, home
+(including hold), volume up/down, play/pause, wake and sleep. The remaining keys — top menu,
+play, pause, stop, next, previous and the skip keys — need AirPlay and will report an error.
+
+The **on-screen keyboard** actions and all now-playing information come from AirPlay only.
+**Launch app** and **Companion Link request (advanced)** need Companion Link.
+
 ### Things worth knowing
 
 - **Not all apps report metadata.** Title, artist and artwork come from whatever the
@@ -82,3 +102,7 @@ editing, now-playing text and a connection status button that reconnects when pr
   AV receiver or TV over CEC, not the Apple TV.
 - If the Apple TV sleeps, the connection drops and the module retries on the reconnect
   interval. Sending **Remote key → Turn on (wake)** only works once reconnected.
+- **Refresh now playing** gets no answer when nothing is playing. That is normal, and the
+  module only mentions it once in the debug log rather than on every poll.
+- The protocol handshake trace from the underlying library is written to the connection log at
+  **debug** level, so turn debug on if a pairing or connection problem needs diagnosing.

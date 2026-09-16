@@ -10,3 +10,4 @@ DEBUG-*
 /.yarn/*
 !/.yarn/patches
 /.vscode
+.DS_Store

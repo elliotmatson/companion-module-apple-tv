@@ -3,13 +3,13 @@ import {
 	Credentials,
 	Key,
 	PlaybackState,
-	scan,
 	type HAPCredentials,
 	type NowPlayingInfo,
 	type OpackDict,
 	type OpackValue,
 } from 'node-appletv-remote'
 import type { RemoteKeyId } from './actions.js'
+import { discoverAppleTv } from './discovery.js'
 
 export interface AppEntry {
 	bundleId: string
@@ -133,6 +133,10 @@ export class AppleTvDevice {
 
 	#pending: PendingPairing | undefined
 
+	/** Port announced by the Apple TV; re-read whenever it is still unknown. */
+	#companionPort: number | undefined
+	#companionPortWarned = false
+
 	/** Launchable apps reported by the Apple TV, used for the "Launch app" choices. */
 	apps: AppEntry[] = []
 
@@ -218,6 +222,8 @@ export class AppleTvDevice {
 
 	async stop(): Promise<void> {
 		this.#destroyed = true
+		this.#companionPort = undefined
+		this.#companionPortWarned = false
 		this.#clearTimers()
 		this.#cancelPairing()
 
@@ -322,12 +328,28 @@ export class AppleTvDevice {
 			return
 		}
 
-		const port = atv.companionPort
+		let port = this.#companionPort
 		if (!port) {
-			this.#host.log('warn', 'Could not find the Companion Link port over Bonjour; retrying')
+			// The port is announced over mDNS and nowhere else, so a missed announcement has to
+			// be retried rather than waited on.
+			const found = await discoverAppleTv(target.host, { wantCompanionPort: true })
+			if (found.companionPort) this.#companionPort = found.companionPort
+			if (found.name) this.state.name = found.name
+			port = this.#companionPort
+		}
+
+		if (!port) {
+			// Repeating this every retry buries the rest of the log.
+			this.#host.log(
+				this.#companionPortWarned ? 'debug' : 'warn',
+				'Could not find the Companion Link port over Bonjour; will keep looking',
+			)
+			this.#companionPortWarned = true
 			this.#scheduleCompanionRetry()
 			return
 		}
+
+		this.#companionPortWarned = false
 
 		this.#companionConnecting = true
 		if (this.#companionTimer) clearTimeout(this.#companionTimer)
@@ -422,39 +444,26 @@ export class AppleTvDevice {
 	}
 
 	async #discover(target: DeviceTarget): Promise<DiscoveredInfo> {
-		const fallback: DiscoveredInfo = {
-			name: this.state.name,
-			address: target.host,
-			port: target.port,
-			deviceId: '',
-			model: this.state.model,
-			companionPort: undefined,
+		const wantCompanionPort = target.transport !== 'airplay'
+
+		this.#host.log('debug', 'Looking the Apple TV up over Bonjour')
+		const found = await discoverAppleTv(target.host, { wantCompanionPort })
+
+		if (found.name) this.state.name = found.name
+		if (found.model) this.state.model = found.model
+		if (found.companionPort) this.#companionPort = found.companionPort
+
+		if (!found.name && !found.companionPort) {
+			this.#host.log('debug', `Bonjour did not answer for ${target.host}; using what we already know`)
 		}
 
-		// The companion-link port is assigned afresh every time the Apple TV restarts, so it is
-		// always looked up rather than remembered.
-		const needsCompanionPort = target.transport !== 'airplay'
-		if (!needsCompanionPort && fallback.name) return fallback
-
-		try {
-			this.#host.log('debug', 'Looking the Apple TV up over Bonjour')
-			const devices = await scan({ timeout: 4000, filter: (d) => d.address === target.host })
-			const found = devices[0]
-			if (!found) {
-				this.#host.log('debug', `Bonjour did not return ${target.host}, using the configured values`)
-				return fallback
-			}
-			return {
-				name: found.name,
-				address: target.host,
-				port: target.port || found.port,
-				deviceId: found.deviceId,
-				model: found.model,
-				companionPort: found.companionPort,
-			}
-		} catch (e) {
-			this.#host.log('debug', `Bonjour scan failed: ${errorMessage(e)}`)
-			return fallback
+		return {
+			name: this.state.name,
+			address: target.host,
+			port: target.port || found.airplayPort || 7000,
+			deviceId: '',
+			model: this.state.model,
+			companionPort: this.#companionPort,
 		}
 	}
 
@@ -735,7 +744,7 @@ export class AppleTvDevice {
 		if (protocol === 'companion') {
 			const port = info.companionPort
 			if (!port) {
-				throw new Error('Could not find the Companion Link port over Bonjour')
+				throw new Error(`Could not find the Companion Link port for ${target.host} over Bonjour`)
 			}
 			const session = await withTimeout(
 				atv.startCompanionPairing({ companionPort: port }),

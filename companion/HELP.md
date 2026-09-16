@@ -50,7 +50,9 @@ ticking **Pair again** will run through both PINs.
 
 Companion Link runs on a port the Apple TV picks fresh every time it restarts, so the module
 always discovers it over Bonjour rather than remembering one. There is nothing to configure, but
-it does mean Companion Link needs Bonjour to reach the Apple TV.
+it does mean Companion Link needs Bonjour to reach the Apple TV. Announcements are occasionally
+dropped, so the module keeps looking rather than giving up — if it never finds the port, Bonjour
+traffic is most likely being blocked between Companion and the Apple TV.
 
 ### Actions
 

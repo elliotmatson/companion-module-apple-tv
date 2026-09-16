@@ -111,6 +111,11 @@ or a URL such as `https://tv.apple.com/…` — which is useful for deep links.
 
 - **Not all apps report metadata.** Title, artist and artwork come from whatever the
   foreground app publishes. Some apps (YouTube is a common example) publish very little.
+- **`app_name` and `app_bundle_id` follow the now-playing app, not the home screen.** The Apple
+  TV announces which app owns playback; it does not report what is merely on screen, so sitting
+  on the home screen or browsing inside an app leaves them at their last value. pyatv, and so
+  Home Assistant, work the same way. If an app reports a bundle ID without a name, the name is
+  filled in from the Companion Link app list where possible.
 - **Turn off** puts the Apple TV to sleep; it does not power down the TV itself. Use your
   display's own module or HDMI-CEC for that.
 - **Volume up/down** control whatever the Apple TV is set to control — often the connected

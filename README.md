@@ -89,6 +89,15 @@ sent in the clear and only the traffic after it is affected.
 
 All three should go upstream; until then Yarn applies them at install time.
 
+### The Companion Link handshake
+
+`#startCompanionSession()` follows pyatv's `CompanionAPI.connect()`: `_systemInfo`, `_touchStart`,
+`_sessionStart`, `TVRCSessionStart`, `_tiStart`, then an `_interest` event registering `_iMC`.
+Only the session and the app list are needed for anything this module does, so each step is
+best-effort — but a device that only hears some of them appears to treat the connection as idle
+and closes it after roughly thirty seconds. `_interest` goes out as an event (`_t: 1`), which
+nothing answers, rather than as a request.
+
 ### Companion Link message format
 
 `node-appletv-remote` sends Companion Link requests as a flat OPACK dict — the caller's fields

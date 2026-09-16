@@ -8,6 +8,7 @@ import {
 	type OpackDict,
 	type OpackValue,
 } from 'node-appletv-remote'
+import { createHash } from 'node:crypto'
 import type { RemoteKeyId } from './actions.js'
 import { discoverAppleTv } from './discovery.js'
 
@@ -25,6 +26,7 @@ const CONNECT_TIMEOUT_MS = 20000
 const PAIR_TIMEOUT_MS = 15000
 const RECONNECT_DELAY_MS = 10000
 /** Companion Link message types, from pyatv's protocol description. */
+const COMPANION_EVENT = 1
 const COMPANION_REQUEST = 2
 /** The data channel needs a moment after it opens before the Apple TV answers queries. */
 const INITIAL_STATE_DELAY_MS = 1500
@@ -376,52 +378,75 @@ export class AppleTvDevice {
 	}
 
 	/**
-	 * The Apple TV wants to be told who is calling and to have a session opened before it will
-	 * accept commands. The field names and the semi-arbitrary constants come from pyatv.
+	 * pyatv's CompanionAPI.connect() runs six steps before it considers the connection usable:
+	 * introduce ourselves, open a touch session, open a remote session, open a text session,
+	 * and register interest in events. Each is best-effort here — the ones we depend on are
+	 * the session and the app list — but a device that never hears the rest appears to treat
+	 * the connection as uninteresting and closes it after about half a minute.
 	 */
 	async #startCompanionSession(): Promise<void> {
 		const clientId = this.#credentials?.companionCredentials?.clientId ?? 'companion'
+		// pyatv sends a MAC-shaped device id; derive a stable one rather than inventing a new
+		// identity on every connect.
+		const digest = createHash('sha256').update(clientId).digest('hex').slice(0, 12)
+		const macShaped = (digest.match(/../g) ?? []).join(':').toUpperCase()
 
-		try {
-			const info: OpackDict = new Map<OpackValue, OpackValue>([
-				['_bf', 0],
-				['_cf', 512],
-				['_clFl', 128],
-				// A null identifier here stops the Apple TV pushing power state events.
-				[
-					'_i',
-					clientId
-						.replace(/[^a-zA-Z0-9]/g, '')
-						.toLowerCase()
-						.slice(0, 12) || 'companion',
-				],
-				['_idsID', clientId],
-				['_pubID', clientId],
-				['_sf', 256],
-				['_sv', '170.18'],
-				['model', 'Companion'],
-				['name', 'Bitfocus Companion'],
-			])
-			await this.companionRequest('_systemInfo', info)
-		} catch (e) {
-			this.#host.log('debug', `Companion Link _systemInfo failed: ${errorMessage(e)}`)
+		await this.#companionStep('_systemInfo', 'introduce ourselves', [
+			['_bf', 0],
+			['_cf', 512],
+			['_clFl', 128],
+			// A null identifier here stops the Apple TV pushing power state events.
+			['_i', digest],
+			['_idsID', clientId],
+			['_pubID', macShaped],
+			['_sf', 256],
+			['_sv', '170.18'],
+			['model', 'Companion'],
+			['name', 'Bitfocus Companion'],
+		])
+
+		await this.#companionStep('_touchStart', 'open a touch session', [
+			['_height', 1000],
+			['_tFl', 0],
+			['_width', 1000],
+		])
+
+		const localSid = Math.floor(Math.random() * 0xffffffff)
+		const session = await this.#companionStep('_sessionStart', 'start a session', [
+			['_srvT', 'com.apple.tvremoteservices'],
+			['_sid', localSid],
+		])
+		if (session) {
+			this.#host.log('debug', `Companion Link session started (remote sid ${asNumber(session.get('_sid')) ?? '?'})`)
 		}
 
+		await this.#companionStep('TVRCSessionStart', 'open a remote session', [['ProtocolVersionKey', '1.2']])
+		await this.#companionStep('_tiStart', 'open a text input session', [])
+
+		// Sent as an event rather than a request: nothing answers it, and registering interest
+		// is what stops the Apple TV treating us as an idle client.
 		try {
-			const localSid = Math.floor(Math.random() * 0xffffffff)
-			const content: OpackDict = new Map<OpackValue, OpackValue>([
-				['_srvT', 'com.apple.tvremoteservices'],
-				['_sid', localSid],
-			])
-			const response = await this.companionRequest('_sessionStart', content)
-			const remoteSid = asNumber(response.get('_sid'))
-			this.#host.log('debug', `Companion Link session started (remote sid ${remoteSid ?? 'unknown'})`)
+			const interest: OpackDict = new Map<OpackValue, OpackValue>([['_regEvents', ['_iMC', '_tiStarted']]])
+			this.companionEvent('_interest', interest)
 		} catch (e) {
-			this.#host.log('warn', `Companion Link session could not be started: ${errorMessage(e)}`)
-			return
+			this.#host.log('debug', `Companion Link interest registration failed: ${errorMessage(e)}`)
 		}
 
 		await this.#fetchAppList()
+	}
+
+	/** One best-effort step of the handshake; a failure is logged and never fatal. */
+	async #companionStep(
+		identifier: string,
+		what: string,
+		entries: [OpackValue, OpackValue][],
+	): Promise<OpackDict | undefined> {
+		try {
+			return await this.companionRequest(identifier, new Map<OpackValue, OpackValue>(entries))
+		} catch (e) {
+			this.#host.log('debug', `Companion Link could not ${what} (${identifier}): ${errorMessage(e)}`)
+			return undefined
+		}
 	}
 
 	/** The launchable app list doubles as the choices for the "Launch app" action. */
@@ -435,7 +460,18 @@ export class AppleTvDevice {
 			}
 			apps.sort((a, b) => a.name.localeCompare(b.name))
 
+			// Republishing the actions rebuilds every dropdown in the UI, so only do it when
+			// the list actually differs -- otherwise a reconnect loop churns the whole editor.
+			const unchanged =
+				apps.length === this.apps.length &&
+				apps.every((app, i) => app.bundleId === this.apps[i].bundleId && app.name === this.apps[i].name)
+
 			this.apps = apps
+			if (unchanged) {
+				this.#host.log('debug', `Found ${apps.length} launchable apps (unchanged)`)
+				return
+			}
+
 			this.#host.log('info', `Found ${apps.length} launchable app${apps.length === 1 ? '' : 's'}`)
 			this.#host.onAppsChanged()
 		} catch (e) {
@@ -483,6 +519,9 @@ export class AppleTvDevice {
 			this.#setConnected(this.state.connected, false)
 			this.#scheduleCompanionRetry()
 		})
+		atv.on('companionEvent', (event: { identifier: string | undefined; data: OpackDict }) => {
+			this.#host.log('debug', `Companion Link event: ${event.identifier ?? '(no identifier)'}`)
+		})
 		atv.on('companionError', (err: Error) => {
 			this.#host.log('warn', `Companion Link error: ${errorMessage(err)}`)
 		})
@@ -527,10 +566,8 @@ export class AppleTvDevice {
 		this.state.companionConnected = companionConnected
 
 		if (!connected) Object.assign(this.state, emptyMedia)
-		if (!companionConnected && this.apps.length > 0) {
-			this.apps = []
-			this.#host.onAppsChanged()
-		}
+		// The app list is kept across a drop: it rarely changes, and clearing it would empty
+		// the "Launch app" dropdown every time the connection blips.
 		if (changed) this.#host.onConnectionChanged()
 	}
 
@@ -569,29 +606,22 @@ export class AppleTvDevice {
 	}
 
 	/**
-	 * SetState messages carry more than the `nowPlaying` event exposes — notably the bundle
-	 * identifier of the foreground app and the metadata returned by a playback queue request.
+	 * SetState messages carry more than the `nowPlaying` event exposes — notably the metadata
+	 * returned by a playback queue request. The foreground app is reported separately as well,
+	 * by messages that arrive whether or not anything is playing.
 	 */
 	#applyRawMessage(msg: { type: number; payload: Record<string, unknown> }): void {
-		if (msg.type !== 4) return
+		let changed = this.#applyClient(msg.payload)
+
+		if (msg.type !== 4) {
+			if (changed) this.#host.onStateChanged()
+			return
+		}
 
 		const setState = asRecord(msg.payload['.setStateMessage'])
-		if (!setState) return
-
-		let changed = false
-
-		const client = asRecord(asRecord(setState.playerPath)?.client)
-		if (client) {
-			const bundleId = asString(client.bundleIdentifier)
-			const displayName = asString(client.displayName)
-			if (bundleId && bundleId !== this.state.appBundleId) {
-				this.state.appBundleId = bundleId
-				changed = true
-			}
-			if (displayName && displayName !== this.state.appName) {
-				this.state.appName = displayName
-				changed = true
-			}
+		if (!setState) {
+			if (changed) this.#host.onStateChanged()
+			return
 		}
 
 		const displayName = asString(setState.displayName)
@@ -625,6 +655,43 @@ export class AppleTvDevice {
 		}
 
 		if (changed) this.#host.onStateChanged()
+	}
+
+	/**
+	 * The app on screen is announced by SetNowPlayingClient and UpdateClient as well as riding
+	 * along on a SetState, so reading only the latter leaves the app unknown until something
+	 * actually plays.
+	 */
+	#applyClient(payload: Record<string, unknown>): boolean {
+		const client =
+			asRecord(asRecord(payload['.setNowPlayingClientMessage'])?.client) ??
+			asRecord(asRecord(payload['.updateClientMessage'])?.client) ??
+			asRecord(asRecord(asRecord(payload['.setStateMessage'])?.playerPath)?.client)
+		if (!client) return false
+
+		let changed = false
+
+		const bundleId = asString(client.bundleIdentifier)
+		if (bundleId && bundleId !== this.state.appBundleId) {
+			this.state.appBundleId = bundleId
+			changed = true
+		}
+
+		// Some apps announce a bundle id with no friendly name; the list from Companion Link
+		// usually has one, so fall back to that before leaving it blank.
+		const displayName = asString(client.displayName) ?? this.appNameFor(bundleId)
+		if (displayName && displayName !== this.state.appName) {
+			this.state.appName = displayName
+			changed = true
+		}
+
+		return changed
+	}
+
+	/** Friendly name for a bundle id, if Companion Link told us about it. */
+	appNameFor(bundleId: string | undefined): string | undefined {
+		if (!bundleId) return undefined
+		return this.apps.find((app) => app.bundleId === bundleId)?.name
 	}
 
 	// --- Commands --------------------------------------------------------------
@@ -708,6 +775,19 @@ export class AppleTvDevice {
 		const response = await atv.sendCompanionRequest(identifier, envelope)
 		const body = response.get('_c')
 		return body instanceof Map ? body : new Map()
+	}
+
+	/** Fire-and-forget counterpart to companionRequest, for messages nothing answers. */
+	companionEvent(identifier: string, content: OpackDict): void {
+		const atv = this.#atv
+		if (!atv || !this.state.companionConnected) throw new Error('Companion Link is not connected')
+
+		const envelope: OpackDict = new Map<OpackValue, OpackValue>([
+			['_t', COMPANION_EVENT],
+			['_c', content],
+			['_x', Math.floor(Math.random() * 0xffff)],
+		])
+		atv.sendCompanionMessage(identifier, envelope)
 	}
 
 	async launchApp(bundleIdOrUrl: string): Promise<void> {

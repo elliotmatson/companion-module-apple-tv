@@ -47,6 +47,16 @@ connection retrying a dead port with no way to recover on its own.
 | `src/variables.ts` | Variable definitions and value updates                                               |
 | `src/presets.ts`   | Preset buttons and their sections                                                    |
 
+### Now-playing updates
+
+Nothing is polled. `node-appletv-remote` sends `ClientUpdatesConfig` with `nowPlayingUpdates`
+during MRP setup, so the Apple TV pushes a `SetState` message for every change and the module
+just listens. The one explicit request is made shortly after connecting, because a subscription
+says nothing about what was already playing before it existed.
+
+An idle Apple TV never answers that request, so the timeout is expected and is logged at debug
+level once rather than on repeat.
+
 ### Pairing
 
 Both protocols are paired in one run, so the flow is three saves: tick **Begin pairing**, enter

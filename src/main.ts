@@ -26,7 +26,6 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 	readonly device = new AppleTvDevice(this)
 
 	#tickTimer: NodeJS.Timeout | undefined
-	#refreshTimer: NodeJS.Timeout | undefined
 	#releaseLibraryLogging: (() => void) | undefined
 
 	/** Everything the running connection depends on, so a no-op save does not restart it. */
@@ -54,9 +53,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	async destroy(): Promise<void> {
 		if (this.#tickTimer) clearInterval(this.#tickTimer)
-		if (this.#refreshTimer) clearTimeout(this.#refreshTimer)
 		this.#tickTimer = undefined
-		this.#refreshTimer = undefined
 
 		this.#releaseLibraryLogging?.()
 		this.#releaseLibraryLogging = undefined
@@ -110,10 +107,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		const deviceTarget: DeviceTarget = {
 			host: target.host,
 			port: target.port,
-			companionPort: Math.max(config.companionPort ?? 0, 0),
 			transport: config.transport ?? 'both',
-			reconnectIntervalMs: Math.max(config.reconnectInterval ?? 10, 2) * 1000,
-			pollIntervalMs: Math.max(config.pollInterval ?? 0, 0) * 1000,
 		}
 
 		const pin = (config.pairPin ?? '').trim()
@@ -280,19 +274,6 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 	syncVariablesAndFeedbacks(): void {
 		UpdateVariableValues(this)
 		this.checkFeedbacks('connected', 'companion_connected', 'playback_state', 'media_matches')
-	}
-
-	/**
-	 * The Apple TV pushes state changes, but not always promptly after a button press,
-	 * so nudge it a moment later. Repeated presses collapse into one request.
-	 */
-	scheduleStateRefresh(delayMs = 800): void {
-		if (this.#refreshTimer) clearTimeout(this.#refreshTimer)
-
-		this.#refreshTimer = setTimeout(() => {
-			this.#refreshTimer = undefined
-			void this.device.refreshState()
-		}, delayMs)
 	}
 
 	async restartConnection(): Promise<void> {

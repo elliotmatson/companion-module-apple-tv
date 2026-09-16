@@ -17,6 +17,9 @@ export type Transport = 'airplay' | 'companion' | 'both'
 /** An unreachable host would otherwise sit in the OS TCP timeout for well over a minute. */
 const CONNECT_TIMEOUT_MS = 20000
 const PAIR_TIMEOUT_MS = 15000
+const RECONNECT_DELAY_MS = 10000
+/** The data channel needs a moment after it opens before the Apple TV answers queries. */
+const INITIAL_STATE_DELAY_MS = 1500
 
 /**
  * HID usage codes accepted by the Companion Link `_hidC` command, as documented by pyatv.
@@ -41,11 +44,7 @@ const COMPANION_HID_CODES: Partial<Record<RemoteKeyId, number>> = {
 export interface DeviceTarget {
 	host: string
 	port: number
-	/** Fallback used only when discovery cannot find the (dynamic) companion-link port */
-	companionPort: number
 	transport: Transport
-	reconnectIntervalMs: number
-	pollIntervalMs: number
 }
 
 export interface DeviceState {
@@ -117,7 +116,7 @@ export class AppleTvDevice {
 
 	#airplayTimer: NodeJS.Timeout | undefined
 	#companionTimer: NodeJS.Timeout | undefined
-	#pollTimer: NodeJS.Timeout | undefined
+	#seedTimer: NodeJS.Timeout | undefined
 	#airplayConnecting = false
 	#companionConnecting = false
 	#destroyed = true
@@ -270,9 +269,13 @@ export class AppleTvDevice {
 			this.#setConnected(true, this.state.companionConnected)
 			this.#host.log('info', `AirPlay connected to ${this.state.name || target.host}`)
 
-			this.#startPolling()
-			// The Apple TV needs a moment after the data channel opens before it answers queries.
-			setTimeout(() => void this.refreshState(), 1500)
+			// The Apple TV pushes every later change by itself (the library subscribes with
+			// ClientUpdatesConfig during MRP setup), but it says nothing about what is already
+			// playing, so ask once to seed the state.
+			this.#seedTimer = setTimeout(() => {
+				this.#seedTimer = undefined
+				void this.refreshState()
+			}, INITIAL_STATE_DELAY_MS)
 		} catch (e) {
 			this.#host.log('error', `AirPlay connection failed: ${errorMessage(e)}`)
 			this.#setConnected(false, this.state.companionConnected)
@@ -300,7 +303,8 @@ export class AppleTvDevice {
 
 		const port = atv.companionPort
 		if (!port) {
-			this.#host.log('warn', 'Could not find the Companion Link port; is Bonjour reaching the Apple TV?')
+			this.#host.log('warn', 'Could not find the Companion Link port over Bonjour; retrying')
+			this.#scheduleCompanionRetry()
 			return
 		}
 
@@ -363,11 +367,11 @@ export class AppleTvDevice {
 			port: target.port,
 			deviceId: '',
 			model: this.state.model,
-			companionPort: target.companionPort > 0 ? target.companionPort : undefined,
+			companionPort: undefined,
 		}
 
 		// The companion-link port is assigned afresh every time the Apple TV restarts, so it is
-		// always discovered rather than trusted from config; the configured value is a last resort.
+		// always looked up rather than remembered.
 		const needsCompanionPort = target.transport !== 'airplay'
 		if (!needsCompanionPort && fallback.name) return fallback
 
@@ -384,7 +388,7 @@ export class AppleTvDevice {
 				port: target.port || found.port,
 				deviceId: found.deviceId,
 				model: found.model,
-				companionPort: found.companionPort ?? (target.companionPort > 0 ? target.companionPort : undefined),
+				companionPort: found.companionPort,
 			}
 		} catch (e) {
 			this.#host.log('debug', `Bonjour scan failed: ${errorMessage(e)}`)
@@ -400,7 +404,6 @@ export class AppleTvDevice {
 			if (this.#atv !== atv || !this.state.connected) return
 			this.#host.log('info', 'AirPlay connection closed')
 			this.#setConnected(false, this.state.companionConnected)
-			this.#stopPolling()
 			this.#scheduleAirplayRetry()
 		})
 		atv.on('companionClose', () => {
@@ -426,7 +429,7 @@ export class AppleTvDevice {
 		this.#airplayTimer = setTimeout(() => {
 			this.#airplayTimer = undefined
 			void this.connectAirplay()
-		}, this.#target?.reconnectIntervalMs ?? 10000)
+		}, RECONNECT_DELAY_MS)
 	}
 
 	#scheduleCompanionRetry(): void {
@@ -435,31 +438,16 @@ export class AppleTvDevice {
 		this.#companionTimer = setTimeout(() => {
 			this.#companionTimer = undefined
 			void this.connectCompanion()
-		}, this.#target?.reconnectIntervalMs ?? 10000)
-	}
-
-	#startPolling(): void {
-		this.#stopPolling()
-
-		const interval = this.#target?.pollIntervalMs ?? 0
-		if (interval <= 0) return
-
-		this.#pollTimer = setInterval(() => {
-			void this.refreshState()
-		}, interval)
-	}
-
-	#stopPolling(): void {
-		if (this.#pollTimer) clearInterval(this.#pollTimer)
-		this.#pollTimer = undefined
+		}, RECONNECT_DELAY_MS)
 	}
 
 	#clearTimers(): void {
 		if (this.#airplayTimer) clearTimeout(this.#airplayTimer)
 		if (this.#companionTimer) clearTimeout(this.#companionTimer)
+		if (this.#seedTimer) clearTimeout(this.#seedTimer)
 		this.#airplayTimer = undefined
 		this.#companionTimer = undefined
-		this.#stopPolling()
+		this.#seedTimer = undefined
 	}
 
 	#setConnected(connected: boolean, companionConnected: boolean): void {
@@ -658,9 +646,9 @@ export class AppleTvDevice {
 		})
 
 		if (protocol === 'companion') {
-			const port = info.companionPort ?? (target.companionPort > 0 ? target.companionPort : undefined)
+			const port = info.companionPort
 			if (!port) {
-				throw new Error('Could not find the Companion Link port. Set it manually in the module config.')
+				throw new Error('Could not find the Companion Link port over Bonjour')
 			}
 			const session = await withTimeout(
 				atv.startCompanionPairing({ companionPort: port }),

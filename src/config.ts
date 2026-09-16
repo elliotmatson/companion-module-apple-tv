@@ -7,16 +7,10 @@ export type ModuleConfig = {
 	host: string
 	port: number
 
-	/** Fallback only. 0 = always discover the companion-link port over mDNS */
-	companionPort: number
-
 	transport: Transport
 
 	pairStart: boolean
 	pairPin: string
-
-	pollInterval: number
-	reconnectInterval: number
 }
 
 export type ModuleSecrets = {
@@ -131,49 +125,6 @@ export function GetConfigFields(paired: PairingStatus): SomeCompanionConfigField
 				'Filled in automatically once pairing succeeds, and holds both protocols. You can also paste ' +
 				'credentials produced by the node-appletv-remote CLI (`atv pair`) here. Clearing this field unpairs ' +
 				'the connection.',
-		},
-
-		{
-			type: 'static-text',
-			id: 'advanced_info',
-			label: 'Advanced',
-			width: 12,
-			value: '',
-		},
-		{
-			type: 'number',
-			id: 'companionPort',
-			label: 'Companion Link port',
-			width: 3,
-			default: 0,
-			min: 0,
-			max: 65535,
-			description:
-				'Leave at 0. The port is discovered over Bonjour, and the Apple TV picks a new one every time it ' +
-				'restarts — only set this if Bonjour is blocked on your network, and expect to update it.',
-			isVisibleExpression: `$(options:transport) != 'airplay'`,
-			disableAutoExpression: true,
-		},
-		{
-			type: 'number',
-			id: 'pollInterval',
-			label: 'Now playing refresh (seconds)',
-			width: 3,
-			default: 15,
-			min: 0,
-			max: 600,
-			description: 'Backstop for the push updates. 0 disables it.',
-			disableAutoExpression: true,
-		},
-		{
-			type: 'number',
-			id: 'reconnectInterval',
-			label: 'Reconnect delay (seconds)',
-			width: 3,
-			default: 10,
-			min: 2,
-			max: 600,
-			disableAutoExpression: true,
 		},
 	]
 }

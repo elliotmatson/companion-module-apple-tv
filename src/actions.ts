@@ -57,8 +57,6 @@ export function UpdateActions(self: ModuleInstance): void {
 			],
 			callback: async (action) => {
 				await self.device.sendKey(action.options.key)
-				// A key press usually changes what is playing; ask for the new state shortly after.
-				self.scheduleStateRefresh()
 			},
 		},
 
@@ -123,7 +121,6 @@ export function UpdateActions(self: ModuleInstance): void {
 				if (!bundleId) throw new Error('No bundle ID given')
 
 				await self.device.launchApp(bundleId)
-				self.scheduleStateRefresh()
 			},
 		},
 
@@ -159,6 +156,8 @@ export function UpdateActions(self: ModuleInstance): void {
 
 		refresh_state: {
 			name: 'Refresh now playing',
+			description:
+				'Not normally needed — the Apple TV pushes changes as they happen. Useful if the state ever ' + 'looks stale.',
 			options: [],
 			callback: async () => {
 				await self.device.refreshState()

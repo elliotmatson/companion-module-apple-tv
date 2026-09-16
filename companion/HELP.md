@@ -50,9 +50,8 @@ If only AirPlay ended up paired, Companion Link is simply skipped — it is not 
 ticking **Begin pairing** again will run through both PINs.
 
 Companion Link runs on a port the Apple TV picks fresh every time it restarts, so the module
-always discovers it over Bonjour rather than remembering one. The **Companion Link port** field
-under Advanced is a last resort for networks where Bonjour is blocked — if you set it, expect to
-have to change it after the Apple TV reboots.
+always discovers it over Bonjour rather than remembering one. There is nothing to configure, but
+it does mean Companion Link needs Bonjour to reach the Apple TV.
 
 ### Actions
 
@@ -83,6 +82,10 @@ Timing: `media_duration`, `media_elapsed`, `media_remaining` (seconds) and the m
 `_hms` variants, plus `media_percent`. The elapsed time is counted locally between the
 updates the Apple TV sends, so it stays smooth while something is playing.
 
+The module subscribes to now-playing updates when it connects, so the Apple TV pushes every
+change as it happens — nothing is polled. It only asks outright once, just after connecting, to
+find out what is already playing.
+
 ### Presets
 
 Ready-made buttons for the full remote layout, transport controls, volume, power, keyboard
@@ -108,7 +111,9 @@ The **on-screen keyboard** actions and all now-playing information come from Air
   AV receiver or TV over CEC, not the Apple TV.
 - If the Apple TV sleeps, the connection drops and the module retries on the reconnect
   interval. Sending **Remote key → Turn on (wake)** only works once reconnected.
-- **Refresh now playing** gets no answer when nothing is playing. That is normal, and the
-  module only mentions it once in the debug log rather than on every poll.
+- **Refresh now playing** gets no answer when nothing is playing. That is normal, and it is
+  logged at debug level rather than shown as an error.
+- If the connection drops, the module retries every 10 seconds. AirPlay and Companion Link
+  retry separately, so one coming back does not disturb the other.
 - The protocol handshake trace from the underlying library is written to the connection log at
   **debug** level, so turn debug on if a pairing or connection problem needs diagnosing.

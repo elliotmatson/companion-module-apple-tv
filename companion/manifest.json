@@ -1,0 +1,34 @@
+{
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"type": "connection",
+	"id": "apple-tv",
+	"name": "apple-tv",
+	"shortname": "Apple TV",
+	"description": "Control an Apple TV over IP using the AirPlay/MRP and Companion Link protocols",
+	"version": "1.0.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/elliotmatson/companion-module-apple-tv.git",
+	"bugs": "https://github.com/elliotmatson/companion-module-apple-tv/issues",
+	"maintainers": [
+		{
+			"name": "Elliot Matson",
+			"github": "elliotmatson"
+		}
+	],
+	"runtime": {
+		"type": "node22",
+		"api": "nodejs-ipc",
+		"apiVersion": "2.0.4",
+		"entrypoint": "../dist/main.js"
+	},
+	"legacyIds": [],
+	"manufacturer": "Apple",
+	"products": ["Apple TV 4K", "Apple TV HD", "Apple TV (4th generation)"],
+	"keywords": ["appletv", "apple-tv", "tvos", "airplay", "mrp", "companion-link", "remote", "playback"],
+	"bonjourQueries": {
+		"bonjour_host": {
+			"type": "airplay",
+			"protocol": "tcp"
+		}
+	}
+}

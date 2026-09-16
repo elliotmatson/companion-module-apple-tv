@@ -746,9 +746,9 @@ export class AppleTvDevice {
 			changed = true
 		}
 
-		// Some apps announce a bundle id with no friendly name; the list from Companion Link
-		// usually has one, so fall back to that before leaving it blank.
-		const displayName = asString(client.displayName) ?? this.appNameFor(bundleId)
+		// Plenty of clients announce a bundle id and no name at all, so work down from the best
+		// source to the worst rather than leaving the variable empty on a button.
+		const displayName = asString(client.displayName) ?? this.appNameFor(bundleId) ?? friendlyAppName(bundleId)
 		if (displayName && displayName !== this.state.appName) {
 			this.state.appName = displayName
 			changed = true
@@ -988,6 +988,48 @@ async function delay(ms: number): Promise<void> {
 export function errorMessage(e: unknown): string {
 	if (e instanceof Error) return e.message
 	return String(e)
+}
+
+/**
+ * Apple's own bundles carry no display name, and their identifiers do not read well on a
+ * button. These are the ones an Apple TV actually surfaces as the active client.
+ */
+const SYSTEM_APP_NAMES: Record<string, string> = {
+	'com.apple.TVAirPlay': 'AirPlay',
+	'com.apple.TVWatchList': 'Apple TV',
+	'com.apple.TVMusic': 'Music',
+	'com.apple.TVPhotos': 'Photos',
+	'com.apple.TVSearch': 'Search',
+	'com.apple.TVSettings': 'Settings',
+	'com.apple.TVHomeSharing': 'Computers',
+	'com.apple.TVMovies': 'Movies',
+	'com.apple.TVShows': 'TV Shows',
+	'com.apple.podcasts': 'Podcasts',
+	'com.apple.TVAppStore': 'App Store',
+	'com.apple.Arcade': 'Arcade',
+	'com.apple.facetime': 'FaceTime',
+	'com.apple.fitness': 'Fitness',
+}
+
+/**
+ * Last resort for a client that gives a bundle id and nothing else: turn the identifier into
+ * something readable. `com.apple.TVAirPlay` becomes AirPlay, `com.plexapp.plex` becomes Plex.
+ */
+export function friendlyAppName(bundleId: string | undefined): string | undefined {
+	if (!bundleId) return undefined
+
+	const known = SYSTEM_APP_NAMES[bundleId]
+	if (known) return known
+
+	const segment = bundleId.split('.').filter(Boolean).pop()
+	if (!segment) return undefined
+
+	// Apple prefixes its own with TV; the rest are usually one camelCase or lowercase word.
+	const stripped = /^TV[A-Z]/.test(segment) ? segment.slice(2) : segment
+	const spaced = stripped.replace(/([a-z0-9])([A-Z])/g, '$1 $2').trim()
+	if (!spaced) return undefined
+
+	return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

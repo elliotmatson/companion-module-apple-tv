@@ -118,8 +118,11 @@ or a URL such as `https://tv.apple.com/…` — which is useful for deep links.
 - **`app_name` and `app_bundle_id` follow the now-playing app, not the home screen.** The Apple
   TV announces which app owns playback; it does not report what is merely on screen, so sitting
   on the home screen or browsing inside an app leaves them at their last value. pyatv, and so
-  Home Assistant, work the same way. If an app reports a bundle ID without a name, the name is
-  filled in from the Companion Link app list where possible.
+  Home Assistant, work the same way.
+- **`app_name` is best-effort.** Many clients report a bundle ID and no name at all — Apple's
+  own components always do. The name is taken from the client if it gives one, then from the
+  Companion Link app list, and failing both is worked out from the bundle ID, so
+  `com.apple.TVAirPlay` shows as AirPlay. Use `app_bundle_id` when you need to match exactly.
 - **Turn off** puts the Apple TV to sleep; it does not power down the TV itself. Use your
   display's own module or HDMI-CEC for that.
 - **Volume up/down** control whatever the Apple TV is set to control — often the connected

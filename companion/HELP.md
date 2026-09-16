@@ -9,23 +9,21 @@ Works with Apple TV 4K, Apple TV HD and the 4th-generation Apple TV on current t
 ### Setting it up
 
 1. Make sure the Apple TV is awake and on the same network as Companion.
-2. In the connection config, pick your Apple TV from the **Apple TV (AirPlay)** dropdown. The
-   list is filtered to Apple TVs, so Macs, HomePods and smart TVs that also answer AirPlay are
-   left out. If Bonjour discovery is blocked on your network, choose _Manual_ and type the IP.
-3. Tick **Begin pairing** and press Save.
-4. A four-digit PIN appears on the TV screen. Type it into **Pairing PIN** and press Save again.
-5. A **second** PIN appears — this one is for Companion Link. Type it in and Save again.
-6. The connection should go green. Pairing only has to be done once; the **Pairing** section
-   shows which protocols have credentials stored.
+2. Pick it from the **Apple TV** dropdown and press Save. The list only contains Apple TVs, so
+   Macs and smart TVs that also answer AirPlay are left out. If Bonjour discovery is blocked on
+   your network, choose _Manual_ and type the IP.
+3. Pairing starts by itself. A four-digit PIN appears on the TV — type it into **Pairing PIN**
+   and press Save.
+4. A **second** PIN appears, this one for Companion Link. Type it in and Save again.
+5. The connection goes green. That is the whole setup.
 
-Both protocols are paired in a single run, which is why there are two PINs: AirPlay first, then
-Companion Link. The status line says which one it is waiting for. If the second pairing cannot
-be started — usually because the Companion Link port could not be found — the AirPlay pairing is
-still kept and the connection carries on without Companion Link.
+The page tells you which step you are on, and the connection status says which PIN it is waiting
+for. Both protocols are paired in one run, which is why there are two PINs: AirPlay first, then
+Companion Link. If the second pairing cannot be started, the AirPlay pairing is still kept and
+everything except app launching carries on working.
 
-If you already have credentials from the `node-appletv-remote` CLI (`atv pair`), you can paste
-the contents of `~/.atv-credentials.json` straight into the **Credentials** field and skip the
-pairing flow. Clearing that field unpairs the connection.
+To start over — a replaced Apple TV, or a factory reset — tick **Pair again** and press Save.
+That option only appears once something has been paired.
 
 > The filter matches the Apple TV models that support these protocols: Apple TV HD (4th gen)
 > and every Apple TV 4K. If Apple ships a model newer than this module knows about, it will not
@@ -47,7 +45,7 @@ whichever is unavailable.
 
 The two sets of credentials are stored side by side, so re-running the pairing refreshes both.
 If only AirPlay ended up paired, Companion Link is simply skipped — it is not an error — and
-ticking **Begin pairing** again will run through both PINs.
+ticking **Pair again** will run through both PINs.
 
 Companion Link runs on a port the Apple TV picks fresh every time it restarts, so the module
 always discovers it over Bonjour rather than remembering one. There is nothing to configure, but

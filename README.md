@@ -71,11 +71,20 @@ without patching the library.
 
 ### Pairing
 
-Both protocols are paired in one run, so the flow is three saves: tick **Begin pairing**, enter
-the AirPlay PIN, enter the Companion Link PIN. `#completePairing()` chains straight into
+There is no button to start pairing: a save with a device selected and nothing stored begins it,
+so the flow is just pick device → PIN → PIN. `#completePairing()` chains straight into
 `beginPairing('companion', …)` once AirPlay succeeds, and only connects after the second PIN (or
 immediately, if the Companion Link pairing could not be started — the AirPlay credentials are
-saved either way).
+saved either way). `getConfigFields()` reads the current pairing state, so the page describes the
+step the user is actually on.
+
+Two things keep that from looping, since a module's own `saveConfig()` comes back as a
+`configUpdated`: an outstanding pairing is checked before anything that could start a new one,
+and `#pairingInFlight` covers the window before there is a pending pairing to check against.
+
+The credentials are stored in Companion's secrets store without a matching config field —
+`setConnectionLabelAndConfig` assigns the secrets blob wholesale rather than filtering it against
+declared fields, so the field would only be UI clutter.
 
 The pairing socket has to stay open between saves, so `applyConfig()` checks for an outstanding
 pairing before it does anything to the connection — otherwise the reconnect logic would tear the

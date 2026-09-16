@@ -1,6 +1,6 @@
 import { InstanceBase, InstanceStatus, type SomeCompanionConfigField } from '@companion-module/base'
 import { Credentials } from 'node-appletv-remote'
-import { GetConfigFields, resolveTarget, type ModuleConfig, type ModuleSecrets, type PairingStatus } from './config.js'
+import { GetConfigFields, resolveTarget, type ModuleConfig, type ModuleSecrets } from './config.js'
 import { UpdateVariableDefinitions, UpdateVariableValues, type VariablesSchema } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions, type ActionsSchema } from './actions.js'
@@ -30,6 +30,9 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	/** Everything the running connection depends on, so a no-op save does not restart it. */
 	#connectionSignature: string | undefined
+
+	/** Set while a PIN is being requested, before there is a pending pairing to check against. */
+	#pairingInFlight = false
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -66,7 +69,14 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 	}
 
 	getConfigFields(): SomeCompanionConfigField[] {
-		return GetConfigFields(this.#pairingStatus())
+		const credentials = this.#readCredentials()
+
+		return GetConfigFields({
+			hasDevice: resolveTarget(this.config) !== null,
+			airplayPaired: credentials !== undefined,
+			companionPaired: credentials?.companionCredentials !== undefined,
+			awaitingPin: this.device.pendingPairingProtocol,
+		})
 	}
 
 	updateActions(): void {
@@ -116,13 +126,25 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 			return
 		}
 
-		if (config.pairStart && !this.device.hasPendingPairing) {
-			await this.#beginPairing(deviceTarget)
+		// Saving our own config comes back here as a configUpdated, so an outstanding pairing has
+		// to be checked before anything that could start a new one.
+		if (this.device.hasPendingPairing) {
+			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
 			return
 		}
 
-		if (this.device.hasPendingPairing) {
-			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
+		if (config.repair) {
+			this.log('info', 'Pairing again at your request; the stored credentials have been discarded')
+			this.secrets = { credentials: '' }
+			await this.#beginPairing(deviceTarget)
+			this.saveConfig({ ...config, repair: false, pairPin: '' }, { credentials: '' })
+			return
+		}
+
+		// Nothing stored means there is nothing to connect with, so just get on with pairing
+		// rather than making the user find a button for it.
+		if (!this.#readCredentials()) {
+			await this.#beginPairing(deviceTarget)
 			return
 		}
 
@@ -137,7 +159,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		const credentials = this.#readCredentials()
 		if (!credentials) {
 			await this.#shutdown()
-			this.updateStatus(InstanceStatus.BadConfig, 'Not paired — tick "Begin pairing" and save')
+			this.updateStatus(InstanceStatus.BadConfig, 'Not paired')
 			this.syncVariablesAndFeedbacks()
 			return
 		}
@@ -160,28 +182,31 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	/** Pairing always covers both protocols, starting with AirPlay. */
 	async #beginPairing(target: DeviceTarget): Promise<void> {
-		await this.#shutdown()
-		this.updateStatus(InstanceStatus.Connecting, 'Requesting a pairing PIN')
+		// A save that lands while the PIN is being requested would otherwise ask for a second one.
+		if (this.#pairingInFlight) return
+		this.#pairingInFlight = true
 
 		try {
+			await this.#shutdown()
+			this.updateStatus(InstanceStatus.Connecting, 'Requesting a pairing PIN')
+
 			await this.device.beginPairing('airplay', target)
 			this.log('info', 'Pairing started — enter the first PIN (AirPlay) shown on the Apple TV')
 			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
 		} catch (e) {
 			this.log('error', `Could not start pairing: ${errorMessage(e)}`)
 			this.updateStatus(InstanceStatus.ConnectionFailure, `Pairing failed: ${errorMessage(e)}`)
+		} finally {
+			this.#pairingInFlight = false
 		}
-
-		// Clear the flag so the next save (the one carrying the PIN) does not restart pairing.
-		this.saveConfig({ ...this.config, pairStart: false }, undefined)
 	}
 
 	async #completePairing(pin: string, target: DeviceTarget): Promise<void> {
 		const protocol = this.device.pendingPairingProtocol
 		if (!protocol) {
-			this.log('error', 'A PIN was entered but pairing has not been started — tick "Begin pairing" first')
-			this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, undefined)
-			this.updateStatus(InstanceStatus.BadConfig, 'Pairing was not started')
+			this.log('error', 'A PIN was entered but the Apple TV is not waiting for one')
+			this.saveConfig({ ...this.config, pairPin: '' }, undefined)
+			this.updateStatus(InstanceStatus.BadConfig, 'Nothing is waiting for a PIN')
 			return
 		}
 
@@ -190,7 +215,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 			credentials = await this.device.completePairing(pin, this.#readCredentials())
 		} catch (e) {
 			this.log('error', `Pairing failed: ${errorMessage(e)}`)
-			this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, undefined)
+			this.saveConfig({ ...this.config, pairPin: '' }, undefined)
 			this.updateStatus(InstanceStatus.AuthenticationFailure, `Pairing failed: ${errorMessage(e)}`)
 			return
 		}
@@ -198,7 +223,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		const serialised = credentials.serialize()
 		this.log('info', `${protocol === 'companion' ? 'Companion Link' : 'AirPlay'} pairing succeeded`)
 		this.secrets = { credentials: serialised }
-		this.saveConfig({ ...this.config, pairStart: false, pairPin: '' }, { credentials: serialised })
+		this.saveConfig({ ...this.config, pairPin: '' }, { credentials: serialised })
 
 		// AirPlay is only half the job: go straight on to the Companion Link PIN.
 		if (protocol === 'airplay' && (await this.#beginCompanionPairing(target))) return
@@ -237,14 +262,6 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		} catch (e) {
 			this.log('error', `Stored credentials could not be read: ${errorMessage(e)}`)
 			return undefined
-		}
-	}
-
-	#pairingStatus(): PairingStatus {
-		const credentials = this.#readCredentials()
-		return {
-			airplay: credentials !== undefined,
-			companion: credentials?.companionCredentials !== undefined,
 		}
 	}
 

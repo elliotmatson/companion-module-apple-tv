@@ -72,6 +72,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		const credentials = this.#readCredentials()
 
 		return GetConfigFields({
+			// `this.config` is not set yet on the very first call, which happens before `init`.
 			hasDevice: resolveTarget(this.config) !== null,
 			airplayPaired: credentials !== undefined,
 			companionPaired: credentials?.companionCredentials !== undefined,

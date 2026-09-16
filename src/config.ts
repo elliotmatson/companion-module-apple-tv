@@ -168,8 +168,14 @@ function pinDescription(state: ConfigUiState): string {
 	return 'Fill this in once the Apple TV shows a PIN.'
 }
 
-/** Resolve the address to connect to, honouring the bonjour picker over the manual fields. */
-export function resolveTarget(config: ModuleConfig): { host: string; port: number } | null {
+/**
+ * Resolve the address to connect to, honouring the bonjour picker over the manual fields.
+ * Tolerates a missing config: Companion asks for the config fields before `init` on a brand
+ * new connection, to collect their defaults.
+ */
+export function resolveTarget(config: ModuleConfig | undefined): { host: string; port: number } | null {
+	if (!config) return null
+
 	const discovered = splitHostPort(config.bonjour_host)
 	if (discovered) return discovered
 

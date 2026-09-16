@@ -76,7 +76,8 @@ so the flow is just pick device → PIN → PIN. `#completePairing()` chains str
 `beginPairing('companion', …)` once AirPlay succeeds, and only connects after the second PIN (or
 immediately, if the Companion Link pairing could not be started — the AirPlay credentials are
 saved either way). `getConfigFields()` reads the current pairing state, so the page describes the
-step the user is actually on.
+step the user is actually on. It has to cope with being called before `init()`: on a first init
+the host calls it to harvest the fields' `default` values, so `this.config` is not set yet.
 
 Two things keep that from looping, since a module's own `saveConfig()` comes back as a
 `configUpdated`: an outstanding pairing is checked before anything that could start a new one,

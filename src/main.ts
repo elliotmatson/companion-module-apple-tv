@@ -34,6 +34,8 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 	/** Set while a PIN is being requested, before there is a pending pairing to check against. */
 	#pairingInFlight = false
 
+	#lastStatus: string | undefined
+
 	constructor(internal: unknown) {
 		super(internal)
 	}
@@ -110,7 +112,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		const target = resolveTarget(config)
 		if (!target) {
 			await this.#shutdown()
-			this.updateStatus(InstanceStatus.BadConfig, 'No Apple TV selected')
+			this.#setStatus(InstanceStatus.BadConfig, 'Choose your Apple TV, then press Save')
 			this.syncVariablesAndFeedbacks()
 			return
 		}
@@ -130,7 +132,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		// Saving our own config comes back here as a configUpdated, so an outstanding pairing has
 		// to be checked before anything that could start a new one.
 		if (this.device.hasPendingPairing) {
-			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
+			this.#setStatus(InstanceStatus.Connecting, this.#pinPrompt())
 			return
 		}
 
@@ -160,7 +162,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		const credentials = this.#readCredentials()
 		if (!credentials) {
 			await this.#shutdown()
-			this.updateStatus(InstanceStatus.BadConfig, 'Not paired')
+			this.#setStatus(InstanceStatus.BadConfig, 'Not paired')
 			this.syncVariablesAndFeedbacks()
 			return
 		}
@@ -172,7 +174,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		}
 		this.#connectionSignature = signature
 
-		this.updateStatus(InstanceStatus.Connecting)
+		this.#setStatus(InstanceStatus.Connecting, 'Connecting')
 		await this.device.start(target, credentials)
 	}
 
@@ -189,14 +191,14 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 		try {
 			await this.#shutdown()
-			this.updateStatus(InstanceStatus.Connecting, 'Requesting a pairing PIN')
+			this.#setStatus(InstanceStatus.Connecting, 'Asking the Apple TV to show a PIN')
 
 			await this.device.beginPairing('airplay', target)
-			this.log('info', 'Pairing started — enter the first PIN (AirPlay) shown on the Apple TV')
-			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
+			this.log('info', 'Pairing 1 of 2 (AirPlay): enter the PIN now showing on the Apple TV')
+			this.#setStatus(InstanceStatus.Connecting, this.#pinPrompt())
 		} catch (e) {
 			this.log('error', `Could not start pairing: ${errorMessage(e)}`)
-			this.updateStatus(InstanceStatus.ConnectionFailure, `Pairing failed: ${errorMessage(e)}`)
+			this.#setStatus(InstanceStatus.ConnectionFailure, `Pairing failed: ${errorMessage(e)}`)
 		} finally {
 			this.#pairingInFlight = false
 		}
@@ -207,7 +209,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		if (!protocol) {
 			this.log('error', 'A PIN was entered but the Apple TV is not waiting for one')
 			this.saveConfig({ ...this.config, pairPin: '' }, undefined)
-			this.updateStatus(InstanceStatus.BadConfig, 'Nothing is waiting for a PIN')
+			this.#setStatus(InstanceStatus.BadConfig, 'Nothing is waiting for a PIN')
 			return
 		}
 
@@ -217,12 +219,12 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 		} catch (e) {
 			this.log('error', `Pairing failed: ${errorMessage(e)}`)
 			this.saveConfig({ ...this.config, pairPin: '' }, undefined)
-			this.updateStatus(InstanceStatus.AuthenticationFailure, `Pairing failed: ${errorMessage(e)}`)
+			this.#setStatus(InstanceStatus.AuthenticationFailure, `Pairing failed: ${errorMessage(e)}`)
 			return
 		}
 
 		const serialised = credentials.serialize()
-		this.log('info', `${protocol === 'companion' ? 'Companion Link' : 'AirPlay'} pairing succeeded`)
+		this.log('info', `${protocol === 'companion' ? 'Companion Link' : 'AirPlay'} paired`)
 		this.secrets = { credentials: serialised }
 		this.saveConfig({ ...this.config, pairPin: '' }, { credentials: serialised })
 
@@ -239,8 +241,8 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 	async #beginCompanionPairing(target: DeviceTarget): Promise<boolean> {
 		try {
 			await this.device.beginPairing('companion', target)
-			this.log('info', 'Now enter the second PIN (Companion Link) shown on the Apple TV')
-			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
+			this.log('info', 'Pairing 2 of 2 (Companion Link): enter the second PIN now showing on the Apple TV')
+			this.#setStatus(InstanceStatus.Connecting, this.#pinPrompt())
 			return true
 		} catch (e) {
 			this.log('warn', `Companion Link pairing could not be started (${errorMessage(e)}); continuing with AirPlay only`)
@@ -250,8 +252,8 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	#pinPrompt(): string {
 		return this.device.pendingPairingProtocol === 'companion'
-			? 'Enter the second PIN (Companion Link)'
-			: 'Enter the first PIN (AirPlay)'
+			? 'Enter PIN 2 of 2 (Companion Link)'
+			: 'Enter PIN 1 of 2 (AirPlay)'
 	}
 
 	#readCredentials(): Credentials | undefined {
@@ -270,24 +272,38 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> implement
 
 	onConnectionChanged(): void {
 		if (this.device.hasPendingPairing) {
-			this.updateStatus(InstanceStatus.Connecting, this.#pinPrompt())
+			this.#setStatus(InstanceStatus.Connecting, this.#pinPrompt())
 		} else if (this.device.isOnline) {
-			// With both transports selected, one of them being down is worth surfacing — but not
-			// while it is still connecting, or the first one up reports the other as broken.
-			const missing: string[] = []
-			if (this.device.wantsAirplay && !this.device.isConnected && !this.device.isAirplayConnecting) {
-				missing.push('AirPlay')
+			const up: string[] = []
+			const down: string[] = []
+
+			// A transport that is still connecting counts as neither, or whichever finishes
+			// first would report the other as broken.
+			if (this.device.wantsAirplay) {
+				if (this.device.isConnected) up.push('AirPlay')
+				else if (!this.device.isAirplayConnecting) down.push('AirPlay')
 			}
-			if (this.device.wantsCompanion && !this.device.isCompanionConnected && !this.device.isCompanionConnecting) {
-				missing.push('Companion Link')
+			if (this.device.wantsCompanion) {
+				if (this.device.isCompanionConnected) up.push('Companion Link')
+				else if (!this.device.isCompanionConnecting) down.push('Companion Link')
 			}
 
-			this.updateStatus(InstanceStatus.Ok, missing.length > 0 ? `${missing.join(' and ')} unavailable` : null)
+			const message = down.length > 0 ? `${up.join(' + ')} (no ${down.join(' or ')})` : up.join(' + ')
+			this.#setStatus(InstanceStatus.Ok, message || null)
 		} else {
-			this.updateStatus(InstanceStatus.Disconnected)
+			this.#setStatus(InstanceStatus.Disconnected)
 		}
 
 		this.syncVariablesAndFeedbacks()
+	}
+
+	/** Companion logs every status update, so repeating one only makes the log harder to read. */
+	#setStatus(status: InstanceStatus, message?: string | null): void {
+		const signature = `${status}:${message ?? ''}`
+		if (signature === this.#lastStatus) return
+
+		this.#lastStatus = signature
+		this.updateStatus(status, message)
 	}
 
 	onStateChanged(): void {

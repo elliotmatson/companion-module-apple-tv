@@ -24,7 +24,7 @@
 	},
 	"dependencies": {
 		"@companion-module/base": "2.0.4",
-		"node-appletv-remote": "^0.3.2"
+		"node-appletv-remote": "patch:node-appletv-remote@npm%3A0.3.2#~/.yarn/patches/node-appletv-remote-npm-0.3.2-9e89db7504.patch"
 	},
 	"devDependencies": {
 		"@companion-module/tools": "^3.1.0",

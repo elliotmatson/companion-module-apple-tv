@@ -241,6 +241,7 @@ export class AppleTvDevice {
 		if (!target || !credentials || this.#destroyed) return
 
 		try {
+			this.#host.log('info', `Connecting to ${target.host}`)
 			const info = await this.#discover(target)
 			if (this.#destroyed) return
 
@@ -436,6 +437,7 @@ export class AppleTvDevice {
 		if (!needsCompanionPort && fallback.name) return fallback
 
 		try {
+			this.#host.log('debug', 'Looking the Apple TV up over Bonjour')
 			const devices = await scan({ timeout: 4000, filter: (d) => d.address === target.host })
 			const found = devices[0]
 			if (!found) {
@@ -784,6 +786,12 @@ export class AppleTvDevice {
 		const pending = this.#pending
 		this.#pending = undefined
 		if (!pending) return
+
+		this.#host.log(
+			'warn',
+			`Pairing was abandoned before the ${pending.protocol === 'companion' ? 'Companion Link' : 'AirPlay'} ` +
+				'PIN was entered',
+		)
 
 		try {
 			pending.destroy()

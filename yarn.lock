@@ -638,7 +638,7 @@ __metadata:
     eslint: "npm:^9.39.4"
     husky: "npm:^9.1.7"
     lint-staged: "npm:^16.4.0"
-    node-appletv-remote: "npm:^0.3.2"
+    node-appletv-remote: "patch:node-appletv-remote@npm%3A0.3.2#~/.yarn/patches/node-appletv-remote-npm-0.3.2-9e89db7504.patch"
     prettier: "npm:^3.8.3"
     rimraf: "npm:^6.1.3"
     typescript: "npm:~6.0.3"
@@ -1613,7 +1613,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"node-appletv-remote@npm:^0.3.2":
+"node-appletv-remote@npm:0.3.2":
   version: 0.3.2
   resolution: "node-appletv-remote@npm:0.3.2"
   dependencies:
@@ -1626,6 +1626,22 @@ __metadata:
   bin:
     atv: dist/cli/index.js
   checksum: 10c0/0a9bb3eba8948accf1b668253a6ab7cf97fbf0ff84fe448cf7107f1376639390b00d42e6d303b7f69ff33b12f02c8884720126cec768ef9567175649d0d12c06
+  languageName: node
+  linkType: hard
+
+"node-appletv-remote@patch:node-appletv-remote@npm%3A0.3.2#~/.yarn/patches/node-appletv-remote-npm-0.3.2-9e89db7504.patch":
+  version: 0.3.2
+  resolution: "node-appletv-remote@patch:node-appletv-remote@npm%3A0.3.2#~/.yarn/patches/node-appletv-remote-npm-0.3.2-9e89db7504.patch::version=0.3.2&hash=c2a2e3"
+  dependencies:
+    "@noble/ciphers": "npm:^1.3.0"
+    bonjour-service: "npm:^1.3.0"
+    bplist-creator: "npm:^0.1.1"
+    bplist-parser: "npm:^0.3.2"
+    fast-srp-hap: "npm:^2.0.4"
+    protobufjs: "npm:^8.0.0"
+  bin:
+    atv: dist/cli/index.js
+  checksum: 10c0/b94caa080eb8e100c0a7536e5c5c1c2260c2f319c64d212d3a285ee0703be1f66123ca0ca8442d567c234a5623fbc21c4e5eb32a94fd35001e0aede7ad6323fa
   languageName: node
   linkType: hard
 

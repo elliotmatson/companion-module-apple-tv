@@ -57,6 +57,18 @@ says nothing about what was already playing before it existed.
 An idle Apple TV never answers that request, so the timeout is expected and is logged at debug
 level once rather than on repeat.
 
+### A patch to node-appletv-remote
+
+`.yarn/patches` carries a one-line fix to the library's Companion Link frame encryption. Its
+`CompanionSession.encrypt()` writes the plaintext length into the 4-byte frame header, but that
+header is also the AAD, and the Apple TV computes it over the ciphertext _plus_ the 16-byte auth
+tag — see `CompanionConnection.send()` in pyatv. Declaring the short length both under-frames the
+message on the wire and makes the AAD disagree, so the Apple TV silently drops every encrypted
+frame and eventually resets the connection. Pair-verify is unaffected because those frames are
+sent in the clear, which is why the connection looks healthy while nothing it carries works.
+
+This should go upstream; until it does, the patch is applied at install time by Yarn.
+
 ### Companion Link message format
 
 `node-appletv-remote` sends Companion Link requests as a flat OPACK dict — the caller's fields
@@ -112,10 +124,12 @@ Verified against an Apple TV HD (`AppleTV5,3`, tvOS 26.4): Bonjour discovery and
 AirPlay pairing, connection and reconnection. Verified locally: the build, lint, packaging, and
 a structural check over the action, feedback, variable, preset and config definitions.
 
-Companion Link pairs and connects against that same hardware. Its commands were timing out until
-the message envelope was corrected; the wire format is now checked by a harness that round-trips
-each request through the library's own OPACK codec and asserts the shape pyatv documents.
+Companion Link pairs and connects against that same hardware. Its commands went unanswered until
+the message envelope and the frame encryption were both corrected. Two harnesses cover that now:
+one round-trips each request through the library's own OPACK codec and asserts the shape pyatv
+documents, the other checks a frame reframes cleanly and decrypts with an independent
+ChaCha20-Poly1305 implementation using the header it would arrive with.
 
 Not yet confirmed working on hardware: **Launch app**, the app list, and the Companion Link HID
-fallback for remote keys — the messages are now provably the right shape, but the Apple TV's
-responses have not been seen. Reports welcome.
+fallback for remote keys — the messages are now provably the right shape and correctly sealed,
+but a successful reply has not been seen. Reports welcome.

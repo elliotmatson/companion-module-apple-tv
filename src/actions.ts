@@ -82,6 +82,8 @@ export function UpdateActions(self: ModuleInstance): void {
 						{ id: 'clear', label: 'Clear field' },
 						{ id: 'delete', label: 'Backspace' },
 					],
+					// isVisibleExpression below can only reference fields that are not expressions
+					disableAutoExpression: true,
 				},
 				{
 					id: 'text',

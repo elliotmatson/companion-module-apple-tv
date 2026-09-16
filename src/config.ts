@@ -45,6 +45,7 @@ export function GetConfigFields(): SomeCompanionConfigField[] {
 			label: 'Apple TV',
 			width: 6,
 			description: 'Discovered over Bonjour. Choose "Manual" to type an address instead.',
+			disableAutoExpression: true,
 		},
 		{
 			type: 'textinput',

@@ -1,0 +1,26 @@
+diff --git a/dist/companion/companion-session.js b/dist/companion/companion-session.js
+index 4afc08fd965ef8f0afa6b85f30987b64317a2f8d..be75ab0e4b240e93b9e0808f64a806a19e421e5d 100644
+--- a/dist/companion/companion-session.js
++++ b/dist/companion/companion-session.js
+@@ -23,12 +23,17 @@ export class CompanionSession {
+     encrypt(frameType, plaintext) {
+         const nonce = generateNonce(this.outCounter);
+         this.outCounter++;
+-        // Build the frame header (used as AAD)
++        // Build the frame header (used as AAD).
++        // The declared length covers the ciphertext AND the trailing auth tag, matching
++        // pyatv's CompanionConnection.send(). Declaring only the plaintext length both
++        // under-frames the message on the wire and makes the AAD disagree with the one the
++        // Apple TV computes, so every encrypted frame is dropped.
++        const framedLength = plaintext.length + AUTH_TAG_LENGTH;
+         const header = Buffer.alloc(4);
+         header[0] = frameType;
+-        header[1] = (plaintext.length >> 16) & 0xff;
+-        header[2] = (plaintext.length >> 8) & 0xff;
+-        header[3] = plaintext.length & 0xff;
++        header[1] = (framedLength >> 16) & 0xff;
++        header[2] = (framedLength >> 8) & 0xff;
++        header[3] = framedLength & 0xff;
+         const { ciphertext, tag } = encryptChaCha20(this.outKey, nonce, plaintext, header);
+         return Buffer.concat([header, ciphertext, tag]);
+     }

@@ -4,5 +4,9 @@ package-lock.json
 /*.tgz
 /dist
 DEBUG-*
-/.yarn
+# Ignore Yarn's own files, but not the patches: they are source, and without them
+# the dependency installs unfixed. The contents must be excluded rather than the
+# directory itself, or git never looks inside to find the exception.
+/.yarn/*
+!/.yarn/patches
 /.vscode
